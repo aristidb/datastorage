@@ -45,3 +45,6 @@ store bs = do test <- fileExist path
 
     objName = review digestName digest
     path = objDir </> objName
+
+load :: Digest SHA256 -> IO L.ByteString
+load digest = L.readFile (objDir </> review digestName digest)
