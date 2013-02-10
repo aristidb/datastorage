@@ -13,7 +13,7 @@ import           System.FilePath
 import           System.Posix.Files
 import           System.IO
 --import qualified Data.ByteString.Base64.URL as B64
-import qualified Data.ByteString.Lazy as L
+--import qualified Data.ByteString.Lazy as L
 
 objDir :: String
 objDir = "obj"
@@ -34,17 +34,17 @@ digestByteString = prism' digestToByteString digestFromByteString
 digestName :: Prism' String (Digest SHA256)
 digestName = base16 . digestByteString
 
-store :: L.ByteString -> IO (Digest SHA256)
+store :: S.ByteString -> IO (Digest SHA256)
 store bs = do test <- fileExist path
               when (not test) $ do hPutStrLn stderr ("New object: " ++ objName)
-                                   L.writeFile path bs
+                                   S.writeFile path bs
               return digest
   where
     digest :: Digest SHA256
-    digest = hashlazy bs
+    digest = hash bs
 
     objName = review digestName digest
     path = objDir </> objName
 
-load :: Digest SHA256 -> IO L.ByteString
-load digest = L.readFile (objDir </> review digestName digest)
+load :: Digest SHA256 -> IO S.ByteString
+load digest = S.readFile (objDir </> review digestName digest)
