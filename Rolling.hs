@@ -1,7 +1,8 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving, BangPatterns #-}
 module Rolling where
 
 import Data.Word
+import Data.Int
 import Data.Bits
 import Data.List
 import Test.QuickCheck hiding ((.&.))
@@ -55,12 +56,23 @@ mask = 1 `shiftL` 13 - 1
 droppedMultiplier :: ModPrime
 droppedMultiplier = size ^ (window - 1)
 
-roll1 :: ModPrime -> (ModPrime, ModPrime) -> ModPrime
-roll1 h (n,o) = size * (h - droppedMultiplier * o) + n
+droppedMultiplier' :: Int64
+droppedMultiplier' = fromIntegral droppedMultiplier
+
+roll1 :: ModPrime -> ModPrime -> ModPrime -> ModPrime
+roll1 !h !n !o = size * (h - droppedMultiplier * o) + n
 {-# INLINE roll1 #-}
 
+rollSum :: Int64 -> Int64 -> Int64 -> Int64
+rollSum !h !n !o = h + n - o
+{-# INLINE rollSum #-}
+
+rollEdward :: Int64 -> Int64 -> Int64 -> Int64
+rollEdward !h !n !o = rem (rem (h - droppedMultiplier' * o) 16411 * 256 + n) 16411
+{-# INLINE rollEdward #-}
+
 roll :: [ModPrime] -> [ModPrime]
-roll xs = tail $ scanl roll1 0 withOld
+roll xs = tail $ scanl (uncurry . roll1) 0 withOld
     where withOld = zip xs (replicate window 0 ++ xs)
 
 windowOrBigger :: Gen [ModPrime]
