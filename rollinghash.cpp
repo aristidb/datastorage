@@ -1,16 +1,16 @@
-#include <cstdint>
+#include <stdint.h>
 
 // gcc actually recognizes this as a rotate-left
-#define ROT64(x, i) ((std::uint64_t((x)) << (i)) | (std::uint64_t((x)) >> (64 - (i))))
+#define ROT64(x, i) ((uint64_t((x)) << (i)) | (uint64_t((x)) >> (64 - (i))))
 
 template<typename T>
 struct ihash {};
 
 template<>
-struct ihash<std::uint8_t> {
-  static std::uint64_t hash(std::uint8_t byte) {
+struct ihash<uint8_t> {
+  static uint64_t hash(uint8_t byte) {
     // putStrLn =<< (intercalate ",\n" . map (\[a,b,c,d] -> printf "      0x%0.16x, 0x%0.16x, 0x%0.16x, 0x%0.16x" a b c d :: String) <$> replicateM 64 (replicateM 4 (randomIO :: IO Word64)))
-    static std::uint64_t tab[256] = {
+    static uint64_t tab[256] = {
       0xfead5b707dc7705c, 0x377c1e06dc1e45cf, 0x0184179586d5ae76, 0xd23aa044f8193aa6,
       0xbd8ef5fcde7bd95e, 0x29a822b00a75ea90, 0x5ba03c1b2fdc2f86, 0x4f67d80bad410270,
       0xfcc4b6b0cb67bb75, 0x8f4359ea8777f5d0, 0x5a110ec6371430f5, 0xe15dae4e9709aa66,
@@ -81,34 +81,53 @@ struct ihash<std::uint8_t> {
   };
 };
 
+template<>
+struct ihash<uint64_t> {
+  // derived from http://web.archive.org/web/20121102023700/http://www.concentric.net/~Ttwang/tech/inthash.htm
+  static uint64_t hash(uint64_t key) {
+    key = (~key) + (key << 21); // key = (key << 21) - key - 1;
+    key = key ^ (key >> 24);
+    key = (key + (key << 3)) + (key << 8); // key * 265
+    key = key ^ (key >> 14);
+    key = (key + (key << 2)) + (key << 4); // key * 21
+    key = key ^ (key >> 28);
+    key = key + (key << 31);
+    return key;
+  }
+};
+
 template<typename T, unsigned window>
 class rhash {
 private:
-  std::uint64_t h;
+  uint64_t h;
 
 public:
-  explicit rhash(std::uint64_t seed) : h(seed) {}
+  explicit rhash(uint64_t seed) : h(seed) {}
 
-  std::uint64_t add(T const &n) {
+  uint64_t add(T const &n) {
     h = ROT64(h, 1) ^ ihash<T>::hash(n);
     return h;
   }
 
-  std::uint64_t add(T const *ns, std::uint64_t len) {
+  uint64_t add(T const *ns, uint64_t len) {
     while (len--) add(*++ns);
     return h;
   }
 
-  std::uint64_t addRemove(T const &n, T const &o) {
+  uint64_t addRemove(T const &n, T const &o) {
     h = ROT64(h, 1) ^ ROT64(ihash<T>::hash(o), window % 64) ^ ihash<T>::hash(n);
     return h;
   }
 };
 
-template class rhash<std::uint8_t, 128>;
+//template uint64_t ihash<uint64_t>::hash(uint64_t);
+//template class rhash<uint8_t, 128>;
+//template class rhash<uint64_t, 16>;
 
-//#include <iostream>
+#include <iostream>
 
 int main() {
+  uint64_t (*f)(uint64_t) = ihash<uint64_t>::hash;
+  std::cout << f(4) << std::endl;
   //std::cout << std::hex << ROT64(0xFF, 60) << std::endl;
 }
