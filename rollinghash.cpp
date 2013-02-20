@@ -1,4 +1,8 @@
 #include <stdint.h>
+#include <iostream>
+#include <stdexcept>
+#include <typeinfo>
+#include <random>
 
 // gcc actually recognizes this as a rotate-left
 #define ROT64(x, i) ((uint64_t((x)) << (i)) | (uint64_t((x)) >> (64 - (i))))
@@ -12,6 +16,13 @@ struct ihash<uint8_t> {
 
   static uint64_t hash(uint8_t byte) {
     return tab[byte];
+  };
+
+  static uint8_t reverse(uint64_t h) {
+    for (int i = 0; i < 256; ++i)
+      if (tab[i] == h)
+        return uint8_t(i);
+    throw std::runtime_error("Invalid hash");
   };
 };
 
@@ -120,17 +131,62 @@ public:
     h = ROT64(h, 1) ^ ROT64(ihash<T>::hash(o), window % 64) ^ ihash<T>::hash(n);
     return h;
   }
+
+  template<typename It>
+  uint64_t hashAll(It start, It end) {
+    It orig = start;
+    for (unsigned n = 0; n < window; ++n) {
+      if (start == end)
+        break;
+      add(*start++);
+    }
+
+    for (; start != end; ++start, ++orig)
+      addRemove(*start, *orig);
+
+    return h;
+  }
+
+  static void test() {
+    std::cout << "testing rhash for " << typeid(T).name() << '/' << window << std::endl;
+
+    std::default_random_engine gen;
+
+    for (int i = 0; i < 20; ++i) {
+      size_t n = std::uniform_int_distribution<size_t>(0, 100)(gen);
+      size_t m = std::uniform_int_distribution<size_t>(window, 1000)(gen);
+
+      std::uniform_int_distribution<T> dist;
+
+      std::vector<T> a, b;
+      while (n--)
+        a.push_back(dist(gen));
+
+      while (m--) {
+        T const &v = dist(gen);
+        a.push_back(v);
+        b.push_back(v);
+      }
+
+      uint64_t h = rhash<T, window>(0).hashAll(a.begin(), a.end());
+      uint64_t g = rhash<T, window>(0).hashAll(b.begin(), b.end());
+
+      std::cout << (h==g) << " : " << h << '=' << g << std::endl;
+    }
+  }
 };
 
 //template uint64_t ihash<uint64_t>::hash(uint64_t);
 template class rhash<uint8_t, 128>;
 template class rhash<uint64_t, 16>;
 
-#include <iostream>
-
 int main() {
-  uint64_t (*f)(uint64_t) = ihash<uint64_t>::hash;
-  std::cout << f(4) << std::endl;
-  std::cout << ihash<uint8_t>::hash('a') << std::endl;
-  //std::cout << std::hex << ROT64(0xFF, 60) << std::endl;
+  for (int i = 0; i < 256; ++i)
+    if (ihash<uint8_t>::reverse(ihash<uint8_t>::hash(uint8_t(i))) != i)
+      std::cerr << "uint8_t hash not reversible for: " << i << std::endl;
+  std::cout << "done.\n";
+
+  rhash<uint8_t, 3>::test();
+  rhash<uint8_t, 128>::test();
+  rhash<uint64_t, 16>::test();
 }
