@@ -94,6 +94,11 @@ public:
     return h;
   }
 
+  std::uint64_t add(T const *ns, std::uint64_t len) {
+    while (len--) add(*++ns);
+    return h;
+  }
+
   std::uint64_t addRemove(T const &n, T const &o) {
     h = ROT64(h, 1) ^ ROT64(ihash<T>::hash(o), window % 64) ^ ihash<T>::hash(n);
     return h;
