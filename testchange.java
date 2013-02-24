@@ -1,3 +1,5 @@
+/* Source: http://web.archive.org/web/20121102023700/http://www.concentric.net/~Ttwang/tech/inthash.htm */
+
 import java.util.*;
 import java.io.*;
 public class testchange
