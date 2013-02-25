@@ -112,6 +112,36 @@ struct ihash<uint64_t> {
 template<size_t n, bool divBy8 = (n % 8) == 0, bool divBy4 = (n % 4) == 0>
 struct ghash;
 
+template<>
+struct ghash<0, true, true> {
+  static uint64_t hash(uint8_t const *) {
+    return 0;
+  }
+};
+
+template<size_t n>
+struct ghash<n, false, false> {
+  static uint64_t hash(uint8_t const *buf) {
+    return ROT64(ghash<n-1>::hash(buf), 1) ^ ihash<uint8_t>::hash(buf[n-1]);
+  }
+};
+
+template<size_t n>
+struct ghash<n, true, true> {
+  static uint64_t hash(uint8_t const *buf) {
+    return ROT64(ghash<n-8>::hash(buf), 1)
+      ^ ihash<uint64_t>::hash(*reinterpret_cast<uint64_t const *>(buf+n-8));
+  }
+};
+
+template<size_t n>
+struct ghash<n, false, true> {
+  static uint64_t hash(uint8_t const *buf) {
+    return ROT64(ghash<n-4>::hash(buf), 1)
+      ^ ihash<uint64_t>::hash(*reinterpret_cast<uint32_t const *>(buf+n-4));
+  }
+};
+
 template<typename T, unsigned window>
 class rhash {
 private:
@@ -179,15 +209,19 @@ public:
   }
 };
 
+template class ghash<13>;
+
 //template uint64_t ihash<uint64_t>::hash(uint64_t);
-template class rhash<uint8_t, 128>;
-template class rhash<uint64_t, 16>;
+//template class rhash<uint8_t, 128>;
+//template class rhash<uint64_t, 16>;
 
 int main() {
-  for (int i = 0; i < 256; ++i)
-    if (ihash<uint8_t>::reverse(ihash<uint8_t>::hash(uint8_t(i))) != i)
-      std::cerr << "uint8_t hash not reversible for: " << i << std::endl;
-  std::cout << "done.\n";
+  //for (int i = 0; i < 256; ++i)
+  //  if (ihash<uint8_t>::reverse(ihash<uint8_t>::hash(uint8_t(i))) != i)
+  //    std::cerr << "uint8_t hash not reversible for: " << i << std::endl;
+  //std::cout << "done.\n";
+
+  //std::cout << "hash 4: " << ghash<4>::hash(reinterpret_cast<uint8_t const*>("abcd")) << std::endl;
 
 /*
   rhash<uint8_t, 3>::test();
