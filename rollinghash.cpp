@@ -109,6 +109,9 @@ struct ihash<uint64_t> {
   }
 };
 
+template<size_t n, bool divBy8 = (n % 8) == 0, bool divBy4 = (n % 4) == 0>
+struct ghash;
+
 template<typename T, unsigned window>
 class rhash {
 private:
@@ -186,7 +189,9 @@ int main() {
       std::cerr << "uint8_t hash not reversible for: " << i << std::endl;
   std::cout << "done.\n";
 
+/*
   rhash<uint8_t, 3>::test();
   rhash<uint8_t, 128>::test();
   rhash<uint64_t, 16>::test();
+*/
 }
