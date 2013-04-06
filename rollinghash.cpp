@@ -142,46 +142,53 @@ struct ghash<n, false, true> {
   }
 };
 
-template<typename T, unsigned window>
+template<size_t obj_size, unsigned window>
 class rhash {
 private:
   uint64_t h;
 
+  typedef ghash<obj_size> Hash;
+
 public:
   explicit rhash(uint64_t seed) : h(seed) {}
 
-  uint64_t add(T const &n) {
-    h = ROT64(h, 1) ^ ihash<T>::hash(n);
+  uint64_t add(uint8_t const *buf) {
+    h = ROT64(h, 1) ^ Hash::hash(buf);
     return h;
   }
 
-  uint64_t add(T const *ns, uint64_t len) {
-    while (len--) add(*++ns);
+  uint64_t add(uint8_t const *ptr, size_t len) {
+    while (len--) {
+      add(ptr);
+      ptr += obj_size;
+    }
     return h;
   }
 
-  uint64_t addRemove(T const &n, T const &o) {
-    h = ROT64(h, 1) ^ ROT64(ihash<T>::hash(o), window % 64) ^ ihash<T>::hash(n);
+  uint64_t addRemove(uint8_t const *n, uint8_t const *o) {
+    h = ROT64(h, 1) ^ ROT64(Hash::hash(o), window % 64) ^ Hash::hash(n);
     return h;
   }
 
-  template<typename It>
-  uint64_t hashAll(It start, It end) {
-    It orig = start;
-    for (unsigned n = 0; n < window; ++n) {
-      if (start == end)
-        break;
-      add(*start++);
+  uint64_t hashAll(uint8_t const *ptr, size_t len) {
+    uint8_t const *orig = ptr;
+
+    for (unsigned n = 0; n < window && len > 0; ++n, --len) {
+      add(ptr);
+      ptr += obj_size;
     }
 
-    for (; start != end; ++start, ++orig)
-      addRemove(*start, *orig);
+    while (len--) {
+      addRemove(ptr, orig);
+      ptr += obj_size;
+      orig += obj_size;
+    }
 
     return h;
   }
 
   static void test() {
-    std::cout << "testing rhash for " << typeid(T).name() << '/' << window << std::endl;
+    std::cout << "testing rhash for " << obj_size << '/' << window << std::endl;
 
     std::default_random_engine gen;
 
@@ -189,20 +196,20 @@ public:
       size_t n = std::uniform_int_distribution<size_t>(0, 100)(gen);
       size_t m = std::uniform_int_distribution<size_t>(window, 1000)(gen);
 
-      std::uniform_int_distribution<T> dist;
+      std::uniform_int_distribution<uint8_t> dist;
 
-      std::vector<T> a, b;
-      while (n--)
+      std::vector<uint8_t> a, b;
+      for (size_t j = 0; j < n * obj_size; ++j)
         a.push_back(dist(gen));
 
-      while (m--) {
-        T const &v = dist(gen);
+      for (size_t j = 0; j < m * obj_size; ++j) {
+        uint8_t v = dist(gen);
         a.push_back(v);
         b.push_back(v);
       }
 
-      uint64_t h = rhash<T, window>(0).hashAll(a.begin(), a.end());
-      uint64_t g = rhash<T, window>(0).hashAll(b.begin(), b.end());
+      uint64_t h = rhash(0).hashAll(&a[0], n + m);
+      uint64_t g = rhash(0).hashAll(&b[0], m);
 
       std::cout << (h==g) << " : " << h << '=' << g << std::endl;
     }
@@ -214,6 +221,7 @@ template class ghash<13>;
 //template uint64_t ihash<uint64_t>::hash(uint64_t);
 //template class rhash<uint8_t, 128>;
 //template class rhash<uint64_t, 16>;
+template class rhash<1, 128>;
 
 int main() {
   //for (int i = 0; i < 256; ++i)
@@ -222,6 +230,10 @@ int main() {
   //std::cout << "done.\n";
 
   //std::cout << "hash 4: " << ghash<4>::hash(reinterpret_cast<uint8_t const*>("abcd")) << std::endl;
+
+  rhash<1, 3>::test();
+  rhash<1, 128>::test();
+  rhash<8, 16>::test();
 
 /*
   rhash<uint8_t, 3>::test();
