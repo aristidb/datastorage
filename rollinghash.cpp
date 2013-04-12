@@ -3,6 +3,7 @@
 #include <stdexcept>
 #include <typeinfo>
 #include <random>
+#include <vector>
 
 // gcc actually recognizes this as a rotate-left
 #define ROT64(x, i) ((uint64_t((x)) << (i)) | (uint64_t((x)) >> (64 - (i))))
@@ -145,82 +146,101 @@ struct ghash<n, false, true> {
 template<size_t obj_size, unsigned window>
 class rhash {
 private:
-  uint64_t h;
+  uint8_t const *ptr;
+  uint8_t const *end;
+  uint64_t hash;
+  uint64_t n_block;
+  uint64_t const mask;
+  uint64_t const block_min;
+  uint64_t const block_max;
 
   typedef ghash<obj_size> Hash;
 
 public:
-  explicit rhash(uint64_t seed) : h(seed) {}
-
-  uint64_t add(uint8_t const *buf) {
-    h = ROT64(h, 1) ^ Hash::hash(buf);
-    return h;
-  }
-
-  uint64_t add(uint8_t const *ptr, size_t len) {
-    while (len--) {
-      add(ptr);
-      ptr += obj_size;
+  rhash(uint8_t const *start, uint8_t const *end, uint64_t mask, uint64_t block_min, uint64_t block_max)
+    : ptr(start), end(end), hash(0), n_block(0), mask(mask), block_min(block_min), block_max(block_max)
+  {
+    for (size_t i = 0; i < window; ++i) {
+      hash = ROT64(hash, 1) ^ Hash::hash(ptr);
+      ++ptr;
     }
-    return h;
+    n_block = window;
   }
 
-  uint64_t addRemove(uint8_t const *n, uint8_t const *o) {
-    h = ROT64(h, 1) ^ ROT64(Hash::hash(o), window % 64) ^ Hash::hash(n);
-    return h;
+  void step() {
+    hash = ROT64(hash, 1) ^ ROT64(Hash::hash(ptr-window), window % 64) ^ Hash::hash(ptr);
+    ptr += obj_size;
+    ++n_block;
   }
 
-  uint64_t hashAll(uint8_t const *ptr, size_t len) {
-    uint8_t const *orig = ptr;
-
-    for (unsigned n = 0; n < window && len > 0; ++n, --len) {
-      add(ptr);
-      ptr += obj_size;
-    }
-
-    while (len--) {
-      addRemove(ptr, orig);
-      ptr += obj_size;
-      orig += obj_size;
-    }
-
-    return h;
-  }
-
-  static void test() {
-    std::cout << "testing rhash for " << obj_size << '/' << window << std::endl;
-
-    std::default_random_engine gen;
-
-    for (int i = 0; i < 20; ++i) {
-      size_t n = std::uniform_int_distribution<size_t>(0, 100)(gen);
-      size_t m = std::uniform_int_distribution<size_t>(window, 1000)(gen);
-
-      std::uniform_int_distribution<uint8_t> dist;
-
-      std::vector<uint8_t> a, b;
-      for (size_t j = 0; j < n * obj_size; ++j)
-        a.push_back(dist(gen));
-
-      for (size_t j = 0; j < m * obj_size; ++j) {
-        uint8_t v = dist(gen);
-        a.push_back(v);
-        b.push_back(v);
+  uint64_t findBlockBoundary() {
+    while (ptr < end) {
+      if (n_block >= block_min) {
+        if (n_block >= block_max)
+          break;
+        if ((hash & mask) == mask)
+          break;
       }
 
-      uint64_t h = rhash(0).hashAll(&a[0], n + m);
-      uint64_t g = rhash(0).hashAll(&b[0], m);
-
-      std::cout << (h==g) << " : " << h << '=' << g << std::endl;
+      step();
     }
+
+    uint64_t res = n_block;
+    n_block = 0;
+    return res;
+  }
+
+  std::vector<uint64_t> blockSizes() {
+    std::vector<uint64_t> res;
+    while (uint64_t n = findBlockBoundary()) {
+      res.push_back(n);
+    }
+    return res;
   }
 };
 
-template class ghash<13>;
+template<size_t obj_size, unsigned window>
+void rhash_test() {
+  std::cout << "testing rhash for " << obj_size << '/' << window << std::endl;
+
+  std::default_random_engine gen;
+
+  for (int i = 0; i < 20; ++i) {
+    size_t n = std::uniform_int_distribution<size_t>(0, 100)(gen);
+    size_t m = std::uniform_int_distribution<size_t>(window, 1000)(gen);
+
+    std::uniform_int_distribution<uint8_t> dist;
+
+    std::vector<uint8_t> a, b;
+    for (size_t j = 0; j < n * obj_size; ++j)
+      a.push_back(dist(gen));
+
+    for (size_t j = 0; j < m * obj_size; ++j) {
+      uint8_t v = dist(gen);
+      a.push_back(v);
+      b.push_back(v);
+    }
+    
+    std::cout << "n:" << n << ",m:" << m << std::endl;
+
+    rhash<obj_size, window> h(&a[0], &a.back() + 1, 0xF, 1, 1000);
+    rhash<obj_size, window> g(&b[0], &b.back() + 1, 0xF, 1, 1000);
+
+    std::cout << "\nh:\n";
+    for (uint64_t x : h.blockSizes())
+      std::cout << std::dec << x << ' ';
+    std::cout << "\ng:\n";
+    for (uint64_t x : g.blockSizes())
+      std::cout << std::dec << x << ' ';
+
+//    uint64_t h = rhash(0).hashAll(&a[0], n + m);
+//    uint64_t g = rhash(0).hashAll(&b[0], m);
+
+//    std::cout << (h==g) << " : " << h << '=' << g << std::endl;
+  }
+}
 
 //template uint64_t ihash<uint64_t>::hash(uint64_t);
-//template class rhash<uint8_t, 128>;
-//template class rhash<uint64_t, 16>;
 template class rhash<1, 128>;
 
 int main() {
@@ -231,9 +251,13 @@ int main() {
 
   //std::cout << "hash 4: " << ghash<4>::hash(reinterpret_cast<uint8_t const*>("abcd")) << std::endl;
 
+  rhash_test<1, 3>();
+
+/*
   rhash<1, 3>::test();
   rhash<1, 128>::test();
   rhash<8, 16>::test();
+*/
 
 /*
   rhash<uint8_t, 3>::test();
