@@ -127,6 +127,7 @@ struct ghash<n, false, false> {
   }
 };
 
+/*
 template<size_t n>
 struct ghash<n, true, true> {
   static uint64_t hash(uint8_t const *buf) {
@@ -142,6 +143,13 @@ struct ghash<n, false, true> {
       ^ ihash<uint64_t>::hash(*reinterpret_cast<uint32_t const *>(buf+n-4));
   }
 };
+*/
+
+template<unsigned window>
+uint8_t const *rhash_initial() {
+  static uint8_t const buf[window] = {};
+  return buf;
+}
 
 template<size_t obj_size, unsigned window>
 class rhash {
@@ -157,18 +165,42 @@ private:
   typedef ghash<obj_size> Hash;
 
 public:
-  rhash(uint8_t const *start, uint8_t const *end, uint64_t mask, uint64_t block_min, uint64_t block_max)
-    : ptr(start), end(end), hash(0), n_block(0), mask(mask), block_min(block_min), block_max(block_max)
+  rhash(uint64_t mask, uint64_t block_min, uint64_t block_max)
+    : ptr(nullptr)
+    , end(nullptr)
+    , hash(0)
+    , n_block(0)
+    , mask(mask)
+    , block_min(block_min)
+    , block_max(block_max)
   {
-    for (size_t i = 0; i < window; ++i) {
-      hash = ROT64(hash, 1) ^ Hash::hash(ptr);
-      ++ptr;
+  }
+
+  void newData(uint8_t const *start, uint8_t const *end) {
+    if (ptr) {
+      uint8_t const *old = ptr - obj_size*window;
+      ptr = start;
+      this->end = end;
+      for (size_t i = 0; i < window; ++i) {
+        hash = ROT64(hash, 1) ^ ROT64(Hash::hash(old), window % 64) ^ Hash::hash(ptr);
+        ptr += obj_size;
+        old += obj_size;
+      }
+      n_block = window;
+    } else {
+      ptr = start;
+      this->end = end;
+
+      for (size_t i = 0; i < window; ++i) {
+        hash = ROT64(hash, 1) ^ Hash::hash(ptr);
+        ptr += obj_size;
+      }
+      n_block = window;
     }
-    n_block = window;
   }
 
   void step() {
-    hash = ROT64(hash, 1) ^ ROT64(Hash::hash(ptr-window), window % 64) ^ Hash::hash(ptr);
+    hash = ROT64(hash, 1) ^ ROT64(Hash::hash(ptr-obj_size*window), window % 64) ^ Hash::hash(ptr);
     ptr += obj_size;
     ++n_block;
   }
@@ -223,8 +255,11 @@ void rhash_test() {
     
     std::cout << "n:" << n << ",m:" << m << std::endl;
 
-    rhash<obj_size, window> h(&a[0], &a.back() + 1, 0xF, 1, 1000);
-    rhash<obj_size, window> g(&b[0], &b.back() + 1, 0xF, 1, 1000);
+    rhash<obj_size, window> h(0xF, 1, 1000);
+    rhash<obj_size, window> g(h);
+
+    h.newData(&a[0], &a.back()+1);
+    g.newData(&b[0], &b.back()+1);
 
     std::cout << "\nh:\n";
     for (uint64_t x : h.blockSizes())
@@ -233,10 +268,7 @@ void rhash_test() {
     for (uint64_t x : g.blockSizes())
       std::cout << std::dec << x << ' ';
 
-//    uint64_t h = rhash(0).hashAll(&a[0], n + m);
-//    uint64_t g = rhash(0).hashAll(&b[0], m);
-
-//    std::cout << (h==g) << " : " << h << '=' << g << std::endl;
+    std::cout << std::endl;
   }
 }
 
@@ -251,7 +283,7 @@ int main() {
 
   //std::cout << "hash 4: " << ghash<4>::hash(reinterpret_cast<uint8_t const*>("abcd")) << std::endl;
 
-  rhash_test<1, 3>();
+  rhash_test<1, 10>();
 
 /*
   rhash<1, 3>::test();
