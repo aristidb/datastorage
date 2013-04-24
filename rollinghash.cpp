@@ -145,15 +145,11 @@ struct ghash<n, false, true> {
 };
 */
 
-template<unsigned window>
-uint8_t const *rhash_initial() {
-  static uint8_t const buf[window] = {};
-  return buf;
-}
-
 template<size_t obj_size, unsigned window>
 class rhash {
 private:
+  static size_t const byte_window = obj_size * window;
+
   uint8_t const *ptr;
   uint8_t const *end;
   uint64_t hash;
@@ -178,7 +174,7 @@ public:
 
   void newData(uint8_t const *start, uint8_t const *end) {
     if (ptr) {
-      uint8_t const *old = ptr - obj_size*window;
+      uint8_t const *old = ptr - byte_window;
       ptr = start;
       this->end = end;
       for (size_t i = 0; i < window; ++i) {
@@ -200,7 +196,7 @@ public:
   }
 
   void step() {
-    hash = ROT64(hash, 1) ^ ROT64(Hash::hash(ptr-obj_size*window), window % 64) ^ Hash::hash(ptr);
+    hash = ROT64(hash, 1) ^ ROT64(Hash::hash(ptr-byte_window), window % 64) ^ Hash::hash(ptr);
     ptr += obj_size;
     ++n_block;
   }
