@@ -4,6 +4,8 @@
 #include <typeinfo>
 #include <random>
 #include <vector>
+#include <iomanip>
+#include <cstring>
 
 // gcc actually recognizes this as a rotate-left
 #define ROT64(x, i) ((uint64_t((x)) << (i)) | (uint64_t((x)) >> (64 - (i))))
@@ -145,6 +147,13 @@ struct ghash<n, false, true> {
 };
 */
 
+void dump_bytes(uint8_t const *ptr, size_t n)
+{
+  while (n--)
+    std::cout << std::hex << std::setw(2) << std::setfill('0') << uint32_t(*ptr++);
+  std::cout << std::endl;
+}
+
 template<size_t obj_size, unsigned window>
 class rhash {
 private:
@@ -170,29 +179,31 @@ public:
     , block_min(block_min)
     , block_max(block_max)
   {
+    uint8_t *ptr = new uint8_t[byte_window];
+//    memset(ptr, 0, byte_window);
+
+    for (size_t i = 0; i < window; ++i) {
+      hash = ROT64(hash, 1) ^ Hash::hash(ptr);
+      ptr += obj_size;
+    }
+
+//    std::cout << "hash:" << std::hex << hash << std::endl;
+//    dump_bytes(ptr-byte_window, byte_window);
+
+    this->ptr = ptr;
+    this->end = ptr;
   }
 
   void newData(uint8_t const *start, uint8_t const *end) {
-    if (ptr) {
-      uint8_t const *old = ptr - byte_window;
-      ptr = start;
-      this->end = end;
-      for (size_t i = 0; i < window; ++i) {
-        hash = ROT64(hash, 1) ^ ROT64(Hash::hash(old), window % 64) ^ Hash::hash(ptr);
-        ptr += obj_size;
-        old += obj_size;
-      }
-      n_block = window;
-    } else {
-      ptr = start;
-      this->end = end;
-
-      for (size_t i = 0; i < window; ++i) {
-        hash = ROT64(hash, 1) ^ Hash::hash(ptr);
-        ptr += obj_size;
-      }
-      n_block = window;
+    uint8_t const *old = ptr - byte_window;
+    ptr = start;
+    this->end = end;
+    for (size_t i = 0; i < window; ++i) {
+      hash = ROT64(hash, 1) ^ ROT64(Hash::hash(old), window % 64) ^ Hash::hash(ptr);
+      ptr += obj_size;
+      old += obj_size;
     }
+    n_block = window;
   }
 
   void step() {
@@ -257,6 +268,8 @@ void rhash_test() {
     h.newData(&a[0], &a.back()+1);
     g.newData(&b[0], &b.back()+1);
 
+    //dump_bytes(&a[0], a.size());
+
     std::cout << "\nh:\n";
     for (uint64_t x : h.blockSizes())
       std::cout << std::dec << x << ' ';
@@ -279,7 +292,7 @@ int main() {
 
   //std::cout << "hash 4: " << ghash<4>::hash(reinterpret_cast<uint8_t const*>("abcd")) << std::endl;
 
-  rhash_test<1, 10>();
+  rhash_test<1, 20>();
 
 /*
   rhash<1, 3>::test();
