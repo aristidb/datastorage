@@ -1,3 +1,4 @@
 obj/*
 *.s
 rh
+a.out*
