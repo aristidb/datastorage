@@ -115,37 +115,35 @@ struct ihash<uint64_t> {
 template<size_t n, bool divBy8 = (n % 8) == 0, bool divBy4 = (n % 4) == 0>
 struct ghash;
 
-template<>
-struct ghash<0, true, true> {
-  static uint64_t hash(uint8_t const *) {
-    return 0;
-  }
-};
-
 template<size_t n>
 struct ghash<n, false, false> {
   static uint64_t hash(uint8_t const *buf) {
-    return ROT64(ghash<n-1>::hash(buf), 1) ^ ihash<uint8_t>::hash(buf[n-1]);
+    uint64_t h = 0;
+    for (int i = 0; i < n; ++i)
+      h = ROT64(h, 1) ^ ihash<uint8_t>::hash(*buf++);
+    return h;
   }
 };
 
-/*
 template<size_t n>
 struct ghash<n, true, true> {
   static uint64_t hash(uint8_t const *buf) {
-    return ROT64(ghash<n-8>::hash(buf), 1)
-      ^ ihash<uint64_t>::hash(*reinterpret_cast<uint64_t const *>(buf+n-8));
+    uint64_t h = 0;
+    for (int i = 0; i < n; i += 8, buf += 8)
+      h = ROT64(h, 1) ^ ihash<uint64_t>::hash(*reinterpret_cast<uint64_t const *>(buf));
+    return h;
   }
 };
 
 template<size_t n>
 struct ghash<n, false, true> {
   static uint64_t hash(uint8_t const *buf) {
-    return ROT64(ghash<n-4>::hash(buf), 1)
-      ^ ihash<uint64_t>::hash(*reinterpret_cast<uint32_t const *>(buf+n-4));
+    uint64_t h = 0;
+    for (int i = 0; i < n; i += 4, buf += 4)
+      h = ROT64(h, 1) ^ ihash<uint64_t>::hash(*reinterpret_cast<uint32_t const *>(buf));
+    return h;
   }
 };
-*/
 
 void dump_bytes(uint8_t const *ptr, size_t n)
 {
@@ -179,7 +177,7 @@ public:
     , block_min(block_min)
     , block_max(block_max)
   {
-    uint8_t *ptr = new uint8_t[byte_window];
+    uint8_t *ptr = new uint8_t[byte_window];//leak!
 //    memset(ptr, 0, byte_window);
 
     for (size_t i = 0; i < window; ++i) {
