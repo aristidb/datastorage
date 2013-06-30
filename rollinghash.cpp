@@ -1,3 +1,4 @@
+// vim: ai:et:sts=2:sw=2
 #include <stdint.h>
 #include <iostream>
 #include <stdexcept>
@@ -6,6 +7,7 @@
 #include <vector>
 #include <iomanip>
 #include <cstring>
+#include <cassert>
 
 // gcc actually recognizes this as a rotate-left
 #define ROT64(x, i) ((uint64_t((x)) << (i)) | (uint64_t((x)) >> (64 - (i))))
@@ -161,6 +163,7 @@ private:
   uint8_t const *end;
   uint64_t hash;
   uint64_t n_block;
+  std::vector<uint8_t> accumulator;
   uint64_t const mask;
   uint64_t const block_min;
   uint64_t const block_max;
@@ -193,6 +196,11 @@ public:
   }
 
   void newData(uint8_t const *start, uint8_t const *end) {
+    if (end - start < byte_window)
+      return;
+  }
+
+  void processNewData(uint8_t const *start, uint8_t const *end) {
     uint8_t const *old = ptr - byte_window;
     ptr = start;
     this->end = end;
@@ -279,6 +287,49 @@ void rhash_test() {
   }
 }
 
+template<size_t obj_size, unsigned window>
+void rhash_test2()
+{
+  std::cout << "testing rhash(2) for " << obj_size << '/' << window << std::endl;
+
+  std::default_random_engine gen;
+
+  for (int i = 0; i < 20; ++i) {
+    size_t n = std::uniform_int_distribution<size_t>(1, 1001)(gen);
+
+    std::uniform_int_distribution<uint8_t> dist;
+
+    std::vector<uint8_t> a;
+    for (size_t j = 0; j < n * obj_size; ++j)
+      a.push_back(dist(gen));
+    
+    std::cout << "n:" << n << std::endl;
+
+    rhash<obj_size, window> h(0xF, 1, 1000);
+    rhash<obj_size, window> g(h);
+
+    h.newData(&a[0], &a.back()+1);
+
+    size_t m = std::uniform_int_distribution<size_t>(0, n-1)(gen);
+    g.newData(&a[0], &a[m*obj_size]);
+
+    //dump_bytes(&a[0], a.size());
+
+    std::cout << "\nh:\n";
+    for (uint64_t x : h.blockSizes())
+      std::cout << std::dec << x << ' ';
+    std::cout << "\ng:\n";
+    for (uint64_t x : g.blockSizes())
+      std::cout << std::dec << x << ' ';
+    g.newData(&a[m*obj_size], &a.back()+1);
+    std::cout << ',';
+    for (uint64_t x : g.blockSizes())
+      std::cout << std::dec << x << ' ';
+
+    std::cout << std::endl;
+  }
+}
+
 //template uint64_t ihash<uint64_t>::hash(uint64_t);
 template class rhash<1, 128>;
 
@@ -290,7 +341,7 @@ int main() {
 
   //std::cout << "hash 4: " << ghash<4>::hash(reinterpret_cast<uint8_t const*>("abcd")) << std::endl;
 
-  rhash_test<1, 20>();
+  rhash_test2<1, 20>();
 
 /*
   rhash<1, 3>::test();
