@@ -6,6 +6,10 @@ import Data.Word
 import Data.Bits
 import qualified Data.Vector.Generic as G
 import qualified Data.Vector.Storable as S
+import Pipes
+import qualified Pipes.Prelude as P
+import Control.Monad.Trans.State
+import Data.Monoid
 
 window :: Int
 window = 128
@@ -85,8 +89,26 @@ hash x = lut S.! fromIntegral x
 rhash :: Word8 -> Word8 -> Word64 -> Word64
 rhash old new h = h `rotateL` 1 `xor` hash old `xor` hash new
 
-contiguous :: S.Vector Word8 -> S.Vector Word64
-contiguous xs = S.postscanl (\x y -> x `rotateL` 1 `xor` y) 0 $
+hashCombine :: Word64 -> Word64 -> Word64
+hashCombine x y = x `rotateL` 1 `xor` y
+
+type Data = S.Vector Word8
+
+contiguous :: Data -> S.Vector Word64
+contiguous xs = S.postscanl hashCombine 0 $
                 S.zipWith xor extended (S.drop window extended)
   where extended = S.replicate window 0 S.++ hashed
         hashed = S.map hash xs
+
+data Output = BlockData Data | BlockDelimiter
+
+split :: (Monad m) => () -> Pipe Data Output (StateT Data m) ()
+split () = lift (put initialState) >> forever parse
+  where
+    initialState = S.replicate window 0
+    parse =
+      do r <- request ()
+         oldWindow
+         newWindow
+    oldWindow = undefined
+    newWindow = undefined
