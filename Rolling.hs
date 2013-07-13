@@ -7,12 +7,19 @@ import Data.Bits
 import qualified Data.Vector.Generic as G
 import qualified Data.Vector.Storable as S
 import Pipes
+import Pipes.Lift
 import qualified Pipes.Prelude as P
-import Control.Monad.Trans.State
+import Control.Monad.Trans.State.Strict
 import Data.Monoid
+import Control.Exception (assert)
+import Control.Monad (when)
+import Control.Monad.IO.Class
 
 window :: Int
 window = 128
+
+mask :: Word64
+mask = 0xf -- 0x1fff
 
 lut :: S.Vector Word64
 lut = S.fromList [
@@ -100,15 +107,36 @@ contiguous xs = S.postscanl hashCombine 0 $
   where extended = S.replicate window 0 S.++ hashed
         hashed = S.map hash xs
 
-data Output = BlockData Data | BlockDelimiter
+data Output = Complete Data | Partial Data
+  deriving (Show)
 
-split :: (Monad m) => () -> Pipe Data Output (StateT Data m) ()
-split () = lift (put initialState) >> forever parse
+data HashState
+  = HashState {
+      lastHash :: Word64
+    , lastWindow :: S.Vector Word64
+    }
+
+--split :: (Monad m) => () -> Pipe Data Output m ()
+split () = evalStateP initialState (forever eat)
   where
-    initialState = S.replicate window 0
-    parse =
-      do r <- request ()
-         oldWindow
-         newWindow
-    oldWindow = undefined
-    newWindow = undefined
+    initialState = HashState 0 (S.replicate window 0)
+    update h w = assert (S.length w == window) $ lift $ put (HashState h w)
+    eat = request () >>= munch
+    munch x =
+      let len = S.length x
+          xh = S.map hash x
+      in
+      do HashState h w <- lift get
+         h' <- chow h w (S.take window xh) x
+         h'' <- if len > window
+           then chow h' xh (S.drop window xh) (S.drop window x)
+           else return h'
+         update h'' (S.drop len w S.++ S.drop (len - window) xh)
+    chow h old new dat = assert (S.length old >= S.length new && S.length new <= S.length dat) $
+      do let rolled = S.postscanl hashCombine h $
+                      S.zipWith xor old new
+             newH = S.last rolled
+             boundaries = S.findIndices (\x -> x .&. mask == mask) rolled
+         n <- S.foldM (\a b -> respond (Complete (S.slice a (b - a) dat)) >> return b) 0 boundaries
+         when (n < S.length dat) $ respond (Partial (S.drop n dat))
+         return newH
