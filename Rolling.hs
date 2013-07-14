@@ -121,22 +121,26 @@ split () = evalStateP initialState (forever eat)
   where
     initialState = HashState 0 (S.replicate window 0)
     update h w = assert (S.length w == window) $ lift $ put (HashState h w)
-    eat = request () >>= munch
-    munch x =
-      let len = S.length x
-          xh = S.map hash x
-      in
-      do HashState h w <- lift get
-         h' <- chow h w (S.take window xh) x
-         h'' <- if len > window
-           then chow h' xh (S.drop window xh) (S.drop window x)
-           else return h'
-         update h'' (S.drop len w S.++ S.drop (len - window) xh)
-    chow h old new dat = assert (S.length old >= S.length new && S.length new <= S.length dat) $
-      do let rolled = S.postscanl hashCombine h $
-                      S.zipWith xor old new
-             newH = S.last rolled
-             boundaries = S.findIndices (\x -> x .&. mask == mask) rolled
-         n <- S.foldM (\a b -> respond (Complete (S.slice a (b - a) dat)) >> return b) 0 boundaries
-         when (n < S.length dat) $ respond (Partial (S.drop n dat))
-         return newH
+    eat =
+      do
+        x <- request ()
+        let len = S.length x
+            xh = S.map hash x
+        HashState h w <- lift get
+        h' <- chow h w (S.take window xh) (S.take window x)
+        h'' <- if len > window
+          then chow h' xh (S.drop window xh) (S.drop window x)
+          else return h'
+        update h'' (S.drop len w S.++ S.drop (len - window) xh)
+    chow h old new dat = assert (S.length old >= S.length new && S.length new == S.length dat) $
+      do
+        liftIO $ print dat
+        let rolled = S.postscanl hashCombine h $
+                     S.zipWith xor old new
+            newH = S.last rolled
+            boundaries = S.findIndices (\x -> x .&. mask == mask) rolled
+        liftIO $ print boundaries
+        let sliceAction a b = respond (Complete (S.slice a (b - a) dat)) >> return b
+        n <- S.foldM sliceAction 0 boundaries
+        when (n < S.length dat) $ respond (Partial (S.drop n dat))
+        return newH
