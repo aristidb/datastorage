@@ -107,7 +107,7 @@ contiguous xs = S.postscanl hashCombine 0 $
   where extended = S.replicate window 0 S.++ hashed
         hashed = S.map hash xs
 
-data Output = Complete Data | Partial Data
+data Output = Complete {output :: Data} | Partial {output :: Data}
   deriving (Show)
 
 data HashState
