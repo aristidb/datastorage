@@ -138,7 +138,7 @@ split () = evalStateP initialState (forever eat)
         let rolled = S.postscanl hashCombine h $
                      S.zipWith xor old new
             newH = S.last rolled
-            boundaries = S.findIndices (\x -> x .&. mask == mask) rolled
+            boundaries = S.map (+1) $ S.findIndices (\x -> x .&. mask == mask) rolled
         liftIO $ print boundaries
         let sliceAction a b = respond (Complete (S.slice a (b - a) dat)) >> return b
         n <- S.foldM sliceAction 0 boundaries
