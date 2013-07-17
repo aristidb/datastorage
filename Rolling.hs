@@ -1,4 +1,4 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving, BangPatterns #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving, BangPatterns, NoMonomorphismRestriction #-}
 -- vim: sts=2:sw=2:ai:et
 module Rolling where
 
@@ -134,13 +134,27 @@ split () = evalStateP initialState (forever eat)
         update h'' (S.drop len w S.++ S.drop (len - window) xh)
     chow h old new dat = assert (S.length old >= S.length new && S.length new == S.length dat) $
       do
-        liftIO $ print dat
         let rolled = S.postscanl hashCombine h $
                      S.zipWith xor old new
             newH = S.last rolled
             boundaries = S.map (+1) $ S.findIndices (\x -> x .&. mask == mask) rolled
-        liftIO $ print boundaries
         let sliceAction a b = respond (Complete (S.slice a (b - a) dat)) >> return b
         n <- S.foldM sliceAction 0 boundaries
         when (n < S.length dat) $ respond (Partial (S.drop n dat))
         return newH
+
+wrap :: Monad m => Proxy a' a b' b m r -> Proxy a' a b' (Maybe b) m s
+wrap p = do
+  p //> respond . Just
+  forever $ respond Nothing
+
+recombine :: Monad m => () -> Pipe (Maybe Output) Data m ()
+recombine () = go S.empty
+  where
+    go s =
+      do
+        i <- request ()
+        case i of
+          Nothing -> return ()
+          Just (Partial x) -> go (s S.++ x)
+          Just (Complete x) -> respond (s S.++ x) >> go S.empty
