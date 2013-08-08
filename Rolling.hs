@@ -6,14 +6,9 @@ import Data.Word
 import Data.Bits
 import qualified Data.Vector.Generic as G
 import qualified Data.Vector.Storable as S
-import Pipes
-import Pipes.Lift
-import qualified Pipes.Prelude as P
-import Control.Monad.Trans.State.Strict
 import Data.Monoid
+import Control.Monad.Trans.RWS.Strict
 import Control.Exception (assert)
-import Control.Monad (when)
-import Control.Monad.IO.Class
 
 window :: Int
 window = 128
@@ -107,41 +102,73 @@ contiguous xs = S.postscanl hashCombine 0 $
   where extended = S.replicate window 0 S.++ hashed
         hashed = S.map hash xs
 
-data Output = Complete {output :: Data} | Partial {output :: Data}
-  deriving (Show)
-
 data HashState
   = HashState {
       lastHash :: Word64
     , lastWindow :: S.Vector Word64
+    , lastPartial :: Data
     }
 
---split :: (Monad m) => () -> Pipe Data Output m ()
-split () = evalStateP initialState (forever eat)
+rollsplit :: Data -> RWS () [Data] HashState ()
+rollsplit x =
+  do
+    let len = S.length x
+        xh = S.map hash x
+    HashState h w p <- get
+    h' <- chow h w (S.take window xh) (S.take window x)
+    h'' <- if len > window
+      then chow h' xh (S.drop window xh) (S.drop window x)
+      else return h'
+    update h'' (S.drop len w S.++ S.drop (len - window) xh)
   where
-    initialState = HashState 0 (S.replicate window 0)
-    update h w = assert (S.length w == window) $ lift $ put (HashState h w)
-    eat =
+    update h w = assert (S.length w == window) $ put (HashState h w undefined)
+    chow h old new dat = assert (S.length old >= S.length new && S.length new == S.length dat) $
       do
-        x <- request ()
-        let len = S.length x
-            xh = S.map hash x
-        HashState h w <- lift get
-        h' <- chow h w (S.take window xh) (S.take window x)
-        h'' <- if len > window
-          then chow h' xh (S.drop window xh) (S.drop window x)
-          else return h'
-        update h'' (S.drop len w S.++ S.drop (len - window) xh)
+        undefined
+        {-
+        let rolled = S.postscanl hashCombine h $
+                     S.zipWith xor old new
+            newH = S.last rolled
+            boundaries = S.map (+1) $ S.findIndices (\x -> x .&. mask == mask) rolled
+        let sliceAction a b = yield (Complete (S.slice a (b - a) dat)) >> return b
+        n <- S.foldM sliceAction 0 boundaries
+        when (n < S.length dat) $ yield (Partial (S.drop n dat))
+        return newH
+        -}
+
+{-
+data Output = Complete {output :: Data} | Partial {output :: Data}
+  deriving (Show)
+
+eat :: Monad m => Data -> Producer Output (StateT HashState m) ()
+eat x =
+  do
+    let len = S.length x
+        xh = S.map hash x
+    HashState h w <- lift get
+    h' <- chow h w (S.take window xh) (S.take window x)
+    h'' <- if len > window
+      then chow h' xh (S.drop window xh) (S.drop window x)
+      else return h'
+    update h'' (S.drop len w S.++ S.drop (len - window) xh)
+  where
+    update h w = assert (S.length w == window) $ lift $ put (HashState h w)
     chow h old new dat = assert (S.length old >= S.length new && S.length new == S.length dat) $
       do
         let rolled = S.postscanl hashCombine h $
                      S.zipWith xor old new
             newH = S.last rolled
             boundaries = S.map (+1) $ S.findIndices (\x -> x .&. mask == mask) rolled
-        let sliceAction a b = respond (Complete (S.slice a (b - a) dat)) >> return b
+        let sliceAction a b = yield (Complete (S.slice a (b - a) dat)) >> return b
         n <- S.foldM sliceAction 0 boundaries
-        when (n < S.length dat) $ respond (Partial (S.drop n dat))
+        when (n < S.length dat) $ yield (Partial (S.drop n dat))
         return newH
+        -}
+
+{-
+split () = evalStateP initialState (forever eat)
+  where
+    initialState = HashState 0 (S.replicate window 0)
 
 wrap :: Monad m => Proxy a' a b' b m r -> Proxy a' a b' (Maybe b) m s
 wrap p = do
@@ -158,3 +185,4 @@ recombine () = go S.empty
           Nothing -> return ()
           Just (Partial x) -> go (s S.++ x)
           Just (Complete x) -> respond (s S.++ x) >> go S.empty
+-}
