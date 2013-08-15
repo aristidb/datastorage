@@ -4,14 +4,22 @@ module Rolling where
 
 import Data.Word
 import Data.Bits
-import qualified Data.Vector.Generic as G
+--import qualified Data.Vector.Generic as G
 import qualified Data.Vector.Storable as S
-import Data.Monoid
-import Control.Monad.Trans.RWS.Strict
+--import Data.Monoid
+import Pipes
+import Pipes.Lift
+--import qualified Pipes.Prelude as P
+import Control.Monad.Trans.State.Strict
 import Control.Exception (assert)
+import Control.Monad (when)
+{-
+import Control.Monad.IO.Class
+import Data.Either
+-}
 
 window :: Int
-window = 128
+window = 1
 
 mask :: Word64
 mask = 0xf -- 0x1fff
@@ -38,26 +46,27 @@ data HashState
   = HashState {
       lastHash :: Word64
     , lastWindow :: S.Vector Word64
-    , lastPartial :: Data
     }
 
-rollsplit :: Data -> RWS () [Data] HashState ()
-rollsplit x =
+data Output = Partial Data | Complete Data
+  deriving (Show)
+
+rollsplitP :: Monad m => Pipe Data Output (StateT HashState m) ()
+rollsplitP =
   do
+    x <- await ()
     let len = S.length x
         xh = S.map hash x
-    HashState h w p <- get
+    HashState h w <- lift get
     h' <- chow h w (S.take window xh) (S.take window x)
     h'' <- if len > window
       then chow h' xh (S.drop window xh) (S.drop window x)
       else return h'
     update h'' (S.drop len w S.++ S.drop (len - window) xh)
   where
-    update h w = assert (S.length w == window) $ put (HashState h w undefined)
+    update h w = assert (S.length w == window) $ lift $ put (HashState h w)
     chow h old new dat = assert (S.length old >= S.length new && S.length new == S.length dat) $
       do
-        undefined
-        {-
         let rolled = S.postscanl hashCombine h $
                      S.zipWith xor old new
             newH = S.last rolled
@@ -66,8 +75,28 @@ rollsplit x =
         n <- S.foldM sliceAction 0 boundaries
         when (n < S.length dat) $ yield (Partial (S.drop n dat))
         return newH
-        -}
 
+recombine :: Monad m => Producer Output m a -> Producer Data m a
+recombine = loop S.empty
+  where
+    loop d p =
+      do
+        e <- lift (next p)
+        case e of
+          Left v -> yield d >> return v
+          Right (Complete x, p') -> yield (d S.++ x) >> loop S.empty p'
+          Right (Partial x, p') -> loop (d S.++ x) p'
+
+rollsplit :: Monad m => Producer Data m () -> Producer Data m ()
+rollsplit p = recombine $ evalStateP initialState $ hoist lift p ~> rollsplitP
+
+initialState = HashState 0 (S.replicate window 0)
+
+test :: [Data] -> IO ()
+test xs = run $ for (rollsplit (each xs)) (lift . print)
+
+test2 :: [Data] -> IO ()
+test2 xs = run $ for (evalStateP initialState $ each xs ~> rollsplitP) (lift . print)
 {-
 data Output = Complete {output :: Data} | Partial {output :: Data}
   deriving (Show)
