@@ -12,11 +12,12 @@ import Pipes.Lift
 import qualified Pipes.Prelude as P
 import Control.Monad.Trans.State.Strict
 import Control.Exception (assert)
-import Control.Monad (when)
+import Control.Monad (when, forever)
 {-
 import Control.Monad.IO.Class
 import Data.Either
 -}
+import qualified Test.QuickCheck as QC
 
 window :: Int
 window = 1
@@ -53,16 +54,18 @@ data Output = Partial Data | Complete Data
 
 rollsplitP :: Monad m => Pipe Data Output (StateT HashState m) ()
 rollsplitP =
+  forever $
   do
     x <- await
     let len = S.length x
         xh = S.map hash x
-    HashState h w <- lift get
-    h' <- chow h w (S.take window xh) (S.take window x)
-    h'' <- if len > window
-      then chow h' xh (S.drop window xh) (S.drop window x)
-      else return h'
-    update h'' (S.drop len w S.++ S.drop (len - window) xh)
+    when (len > 0) $ do
+      HashState h w <- lift get
+      h' <- chow h w (S.take window xh) (S.take window x)
+      h'' <- if len > window
+        then chow h' xh (S.drop window xh) (S.drop window x)
+        else return h'
+      update h'' (S.drop len w S.++ S.drop (len - window) xh)
   where
     update h w = assert (S.length w == window) $ lift $ put (HashState h w)
     chow h old new dat = assert (S.length old >= S.length new && S.length new == S.length dat) $
@@ -92,6 +95,17 @@ rollsplit p = recombine $ evalStateP initialState $ hoist lift p >-> rollsplitP
 
 rollsplitL :: [Data] -> [Data]
 rollsplitL xs = P.toList $ rollsplit (each xs)
+
+instance (QC.Arbitrary a, S.Storable a) => QC.Arbitrary (S.Vector a) where
+  arbitrary = fmap S.fromList QC.arbitrary
+
+prop_allInputIsOutput xs = S.concat (rollsplitL xs) == S.concat xs
+prop_inputSplit x y = rollsplitL [x, y] == rollsplitL [x S.++ y]
+
+prop_valid = prop_allInputIsOutput QC..&. prop_inputSplit
+
+qc :: IO ()
+qc = QC.quickCheckWith (QC.stdArgs { QC.maxSuccess = 500 }) prop_valid
 
 initialState :: HashState
 initialState = HashState 0 (S.replicate window 0)
