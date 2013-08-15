@@ -9,7 +9,7 @@ import qualified Data.Vector.Storable as S
 --import Data.Monoid
 import Pipes
 import Pipes.Lift
---import qualified Pipes.Prelude as P
+import qualified Pipes.Prelude as P
 import Control.Monad.Trans.State.Strict
 import Control.Exception (assert)
 import Control.Monad (when)
@@ -54,7 +54,7 @@ data Output = Partial Data | Complete Data
 rollsplitP :: Monad m => Pipe Data Output (StateT HashState m) ()
 rollsplitP =
   do
-    x <- await ()
+    x <- await
     let len = S.length x
         xh = S.map hash x
     HashState h w <- lift get
@@ -88,15 +88,20 @@ recombine = loop S.empty
           Right (Partial x, p') -> loop (d S.++ x) p'
 
 rollsplit :: Monad m => Producer Data m () -> Producer Data m ()
-rollsplit p = recombine $ evalStateP initialState $ hoist lift p ~> rollsplitP
+rollsplit p = recombine $ evalStateP initialState $ hoist lift p >-> rollsplitP
 
+rollsplitL :: [Data] -> [Data]
+rollsplitL xs = P.toList $ rollsplit (each xs)
+
+initialState :: HashState
 initialState = HashState 0 (S.replicate window 0)
 
 test :: [Data] -> IO ()
 test xs = run $ for (rollsplit (each xs)) (lift . print)
 
 test2 :: [Data] -> IO ()
-test2 xs = run $ for (evalStateP initialState $ each xs ~> rollsplitP) (lift . print)
+test2 xs = run $ for (evalStateP initialState $ each xs >-> rollsplitP) (lift . print)
+
 {-
 data Output = Complete {output :: Data} | Partial {output :: Data}
   deriving (Show)
