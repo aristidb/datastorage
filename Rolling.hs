@@ -100,7 +100,7 @@ instance (QC.Arbitrary a, S.Storable a) => QC.Arbitrary (S.Vector a) where
   arbitrary = fmap S.fromList QC.arbitrary
 
 prop_allInputIsOutput xs = S.concat (rollsplitL xs) == S.concat xs
-prop_inputSplit x y = rollsplitL [x, y] == rollsplitL [x S.++ y]
+prop_inputSplit xs = rollsplitL xs == rollsplitL [S.concat xs]
 
 prop_valid = prop_allInputIsOutput QC..&. prop_inputSplit
 
