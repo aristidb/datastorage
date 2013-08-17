@@ -18,6 +18,8 @@ import Control.Monad.IO.Class
 import Data.Either
 -}
 import qualified Test.QuickCheck as QC
+import Data.List
+import Debug.Trace
 
 window :: Int
 window = 1
@@ -94,13 +96,23 @@ rollsplit :: Monad m => Producer Data m () -> Producer Data m ()
 rollsplit p = recombine $ evalStateP initialState $ hoist lift p >-> rollsplitP
 
 rollsplitL :: [Data] -> [Data]
-rollsplitL xs = P.toList $ rollsplit (each xs)
+rollsplitL xs = filter (not.S.null) . P.toList $ rollsplit (each xs)
 
 instance (QC.Arbitrary a, S.Storable a) => QC.Arbitrary (S.Vector a) where
   arbitrary = fmap S.fromList QC.arbitrary
 
+init' :: [a] -> [a]
+init' xs = take (length xs - 1) xs
+
+tail' :: [a] -> [a]
+tail' xs = drop 1 xs
+
 prop_allInputIsOutput xs = S.concat (rollsplitL xs) == S.concat xs
 prop_inputSplit xs = rollsplitL xs == rollsplitL [S.concat xs]
+prop_concat xs ys = traceShow [a,b,c] $ init' b `isPrefixOf` a && tail' c `isSuffixOf` a
+  where a = rollsplitL [xs, ys]
+        b = rollsplitL [xs]
+        c = rollsplitL [ys]
 
 prop_valid = prop_allInputIsOutput QC..&. prop_inputSplit
 
