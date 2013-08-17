@@ -32,7 +32,7 @@ hash x = lut S.! fromIntegral x
 {-# INLINE hash #-}
 
 rhash :: Word8 -> Word8 -> Word64 -> Word64
-rhash old new h = h `rotateL` 1 `xor` hash old `xor` hash new
+rhash old new h = h `rotateL` 1 `xor` (hash old `rotateL` window) `xor` hash new
 
 hashCombine :: Word64 -> Word64 -> Word64
 hashCombine x y = x `rotateL` 1 `xor` y
