@@ -22,7 +22,7 @@ import Data.List
 import Debug.Trace
 
 window :: Int
-window = 1
+window = 16
 
 mask :: Word64
 mask = 0xf -- 0x1fff
@@ -49,7 +49,11 @@ data HashState
   = HashState {
       lastHash :: Word64
     , lastWindow :: S.Vector Word64
+    , lastPartial :: Int
     }
+
+initialState :: HashState
+initialState = HashState 0 (S.replicate window 0) 0
 
 data Output = Partial Data | Complete Data
   deriving (Show)
@@ -62,24 +66,30 @@ rollsplitP =
     let len = S.length x
         xh = S.map hash x
     when (len > 0) $ do
-      HashState h w <- lift get
-      h' <- chow h w (S.take window xh) (S.take window x)
-      h'' <- if len > window
-        then chow h' xh (S.drop window xh) (S.drop window x)
-        else return h'
-      update h'' (S.drop len w S.++ S.drop (len - window) xh)
+      HashState h w p <- lift get
+      (h', p') <- chow h w p (S.take window xh) (S.take window x)
+      (h'', p'') <- if len > window
+        then chow h' xh p' (S.drop window xh) (S.drop window x)
+        else return (h', p')
+      update h'' (S.drop len w S.++ S.drop (len - window) xh) p''
   where
-    update h w = assert (S.length w == window) $ lift $ put (HashState h w)
-    chow h old new dat = assert (S.length old >= S.length new && S.length new == S.length dat) $
+    update h w p = assert (S.length w == window) $ lift $ put (HashState h w p)
+    chow h old partial new dat = assert (S.length old >= S.length new && S.length new == S.length dat) $
       do
         let rolled = S.postscanl hashCombine h $
                      S.zipWith xor old new
             newH = S.last rolled
             boundaries = S.map (+1) $ S.findIndices (\x -> x .&. mask == mask) rolled
-        let sliceAction a b = yield (Complete (S.slice a (b - a) dat)) >> return b
-        n <- S.foldM sliceAction 0 boundaries
+        traceShow dat $ return ()
+        traceShow (S.map (.&. mask) rolled) $ return ()
+        traceShow (partial, boundaries) $ return ()
+        let sliceAction a b = if (b - a) < window
+                                then return a
+                                else yield (Complete (S.slice a' (b - a') dat)) >> return b
+              where a' = max 0 a
+        n <- S.foldM sliceAction (-partial) boundaries
         when (n < S.length dat) $ yield (Partial (S.drop n dat))
-        return newH
+        return (newH, S.length dat - n)
 
 recombine :: Monad m => Producer Output m a -> Producer Data m a
 recombine = loop S.empty
@@ -109,18 +119,15 @@ tail' xs = drop 1 xs
 
 prop_allInputIsOutput xs = S.concat (rollsplitL xs) == S.concat xs
 prop_inputSplit xs = rollsplitL xs == rollsplitL [S.concat xs]
-prop_concat xs ys = traceShow [a,b,c] $ init' b `isPrefixOf` a && tail' c `isSuffixOf` a
+prop_concat xs ys = traceShow a $ traceShow b $ traceShow c $ init' b `isPrefixOf` a && tail' c `isSuffixOf` a
   where a = rollsplitL [xs, ys]
         b = rollsplitL [xs]
         c = rollsplitL [ys]
 
-prop_valid = prop_allInputIsOutput QC..&. prop_inputSplit
+prop_valid = prop_allInputIsOutput QC..&. prop_inputSplit QC..&. prop_concat
 
 qc :: IO ()
 qc = QC.quickCheckWith (QC.stdArgs { QC.maxSuccess = 500 }) prop_valid
-
-initialState :: HashState
-initialState = HashState 0 (S.replicate window 0)
 
 test :: [Data] -> IO ()
 test xs = run $ for (rollsplit (each xs)) (lift . print)
