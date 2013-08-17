@@ -77,7 +77,7 @@ rollsplitP =
     chow h old partial new dat = assert (S.length old >= S.length new && S.length new == S.length dat) $
       do
         let rolled = S.postscanl hashCombine h $
-                     S.zipWith xor old new
+                     S.zipWith (\o n -> (o `rotateL` window) `xor` n) old new
             newH = S.last rolled
             boundaries = S.map (+1) $ S.findIndices (\x -> x .&. mask == mask) rolled
         traceShow dat $ return ()
