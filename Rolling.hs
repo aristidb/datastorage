@@ -80,7 +80,7 @@ rollsplitP =
                      S.zipWith (\o n -> (o `rotateL` window) `xor` n) old new
             newH = S.last rolled
             boundaries = S.map (+1) $ S.findIndices (\x -> x .&. mask == mask) rolled
-        traceShow dat $ return ()
+        traceShow ("dat",dat) $ return ()
         traceShow (S.map (.&. mask) rolled) $ return ()
         traceShow (partial, boundaries) $ return ()
         let sliceAction a b = if (b - a) < window
@@ -119,7 +119,13 @@ tail' xs = drop 1 xs
 
 prop_allInputIsOutput xs = S.concat (rollsplitL xs) == S.concat xs
 prop_inputSplit xs = rollsplitL xs == rollsplitL [S.concat xs]
-prop_concat xs ys = traceShow a $ traceShow b $ traceShow c $ init' b `isPrefixOf` a && tail' c `isSuffixOf` a
+prop_prefix xs ys = traceShow (a, b) $ init' b `isPrefixOf` a
+  where a = rollsplitL [xs, ys]
+        b = rollsplitL [xs]
+prop_suffix xs ys = traceShow (a, c) $ tail' c `isSuffixOf` a
+  where a = rollsplitL [xs, ys]
+        c = rollsplitL [ys]
+prop_concat xs ys = traceShow (a, b, c) $ init' b `isPrefixOf` a && tail' c `isSuffixOf` a
   where a = rollsplitL [xs, ys]
         b = rollsplitL [xs]
         c = rollsplitL [ys]
