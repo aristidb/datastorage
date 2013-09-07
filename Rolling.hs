@@ -80,7 +80,7 @@ rollsplitP =
             appliedBoundaries = S.dropWhile (< start) boundaries
         let sliceAction a b = do
               yield (Complete (S.slice a (b - a) dat))
-              return (max a b)
+              return b
         n <- S.foldM sliceAction 0 appliedBoundaries
         when (n < S.length dat) $ yield (Partial (S.drop n dat))
         return (newH, input+S.length dat)
