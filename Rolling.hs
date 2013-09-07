@@ -76,13 +76,12 @@ rollsplitP =
                      S.zipWith (\o n -> (o `rotateL` window) `xor` n) old new
             newH = S.last rolled
             boundaries = S.map (+1) $ S.findIndices (\x -> x .&. mask == mask) rolled
-        let start = max (window - input) 0
+            start = max (window - input) 0
+            appliedBoundaries = S.dropWhile (< start) boundaries
         let sliceAction a b = do
-              when (b > a) $ yield (Complete (S.slice a (b - a) dat))
+              yield (Complete (S.slice a (b - a) dat))
               return (max a b)
-        when (start > 0) $ yield (Partial (S.take start dat))
-        nBoundary <- S.foldM sliceAction start boundaries
-        let n = max start nBoundary
+        n <- S.foldM sliceAction 0 appliedBoundaries
         when (n < S.length dat) $ yield (Partial (S.drop n dat))
         return (newH, input+S.length dat)
 
