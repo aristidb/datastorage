@@ -13,13 +13,9 @@ import qualified Pipes.Prelude as P
 import Control.Monad.Trans.State.Strict
 import Control.Exception (assert)
 import Control.Monad (when, forever)
-{-
-import Control.Monad.IO.Class
-import Data.Either
--}
 import qualified Test.QuickCheck as QC
 import Data.List
-import Debug.Trace
+--import Debug.Trace
 
 window :: Int
 window = 16
@@ -80,14 +76,10 @@ rollsplitP =
                      S.zipWith (\o n -> (o `rotateL` window) `xor` n) old new
             newH = S.last rolled
             boundaries = S.map (+1) $ S.findIndices (\x -> x .&. mask == mask) rolled
-        traceShow ("dat",dat) $ return ()
-        traceShow (S.map (.&. mask) rolled) $ return ()
-        traceShow (input, boundaries) $ return ()
         let start = max (window - input) 0
         let sliceAction a b = do
               when (b > a) $ yield (Complete (S.slice a (b - a) dat))
               return (max a b)
-        traceShow start $ return ()
         when (start > 0) $ yield (Partial (S.take start dat))
         nBoundary <- S.foldM sliceAction start boundaries
         let n = max start nBoundary
@@ -122,13 +114,13 @@ tail' xs = drop 1 xs
 
 prop_allInputIsOutput xs = S.concat (rollsplitL xs) == S.concat xs
 prop_inputSplit xs = rollsplitL xs == rollsplitL [S.concat xs]
-prop_prefix xs ys = traceShow (a, b) $ init' b `isPrefixOf` a
+prop_prefix xs ys = init' b `isPrefixOf` a
   where a = rollsplitL [xs, ys]
         b = rollsplitL [xs]
-prop_suffix xs ys = traceShow (a, c) $ tail' c `isSuffixOf` a
+prop_suffix xs ys = tail' c `isSuffixOf` a
   where a = rollsplitL [xs, ys]
         c = rollsplitL [ys]
-prop_concat xs ys = traceShow (a, b, c) $ init' b `isPrefixOf` a && tail' c `isSuffixOf` a
+prop_concat xs ys = init' b `isPrefixOf` a && tail' c `isSuffixOf` a
   where a = rollsplitL [xs, ys]
         b = rollsplitL [xs]
         c = rollsplitL [ys]
