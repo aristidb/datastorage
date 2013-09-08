@@ -30,6 +30,9 @@ hash x = lut S.! fromIntegral x
 rhash :: Word8 -> Word8 -> Word64 -> Word64
 rhash old new h = h `rotateL` 1 `xor` (hash old `rotateL` window) `xor` hash new
 
+(+>) :: Word64 -> Word64 -> Word64
+o +> n = (o `rotateL` window) `xor` n
+
 hashCombine :: Word64 -> Word64 -> Word64
 hashCombine x y = x `rotateL` 1 `xor` y
 
@@ -37,9 +40,8 @@ type Data = S.Vector Word8
 
 contiguous :: Data -> S.Vector Word64
 contiguous xs = S.postscanl hashCombine 0 $
-                S.zipWith xor extended (S.drop window extended)
-  where extended = S.replicate window 0 S.++ hashed
-        hashed = S.map hash xs
+                S.zipWith (+>) (S.drop window hashed) hashed
+  where hashed = S.map hash xs
 
 data HashState
   = HashState {
@@ -73,7 +75,7 @@ rollsplitP =
     chow h old input new dat = assert (S.length old >= S.length new && S.length new == S.length dat) $
       do
         let rolled = S.postscanl hashCombine h $
-                     S.zipWith (\o n -> (o `rotateL` window) `xor` n) old new
+                     S.zipWith (+>) old new
             newH = S.last rolled
             boundaries = S.map (+1) $ S.findIndices (\x -> x .&. mask == mask) rolled
             start = max (window - input) 0
