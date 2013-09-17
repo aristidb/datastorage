@@ -15,7 +15,7 @@ import Control.Exception (assert)
 import Control.Monad (when, forever)
 import qualified Test.QuickCheck as QC
 import Data.List
---import Debug.Trace
+import Debug.Trace
 
 window :: Int
 window = 16
@@ -38,10 +38,10 @@ hashCombine x y = x `rotateL` 1 `xor` y
 
 type Data = S.Vector Word8
 
-contiguous :: Data -> S.Vector Word64
-contiguous xs = S.postscanl hashCombine 0 $
-                S.zipWith (+>) (S.drop window hashed) hashed
+contiguous xs = traceShow boundaries $ zipWith (\a b -> S.slice a (b - a) xs) boundaries (tail boundaries)
   where hashed = S.map hash xs
+        rolled = S.postscanl hashCombine 0 $ S.zipWith (+>) (S.drop window hashed) hashed
+        boundaries = (0:) $ S.toList $ S.map (+1) $ S.findIndices (\x -> x .&. mask == mask) rolled
 
 data HashState
   = HashState {
