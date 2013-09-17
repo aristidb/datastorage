@@ -41,7 +41,15 @@ type Data = S.Vector Word8
 contiguous xs = traceShow boundaries $ zipWith (\a b -> S.slice a (b - a) xs) boundaries (tail boundaries)
   where hashed = S.map hash xs
         rolled = S.postscanl hashCombine 0 $ S.zipWith (+>) (S.drop window hashed) hashed
-        boundaries = (0:) $ S.toList $ S.map (+1) $ S.findIndices (\x -> x .&. mask == mask) rolled
+        boundaries = (0:) . (++[S.length xs]) $ S.toList $ S.map (+(1+window)) $ S.findIndices (\x -> x .&. mask == mask) rolled
+
+cprop_allInputIsOutput xs = S.concat (contiguous xs) == xs
+cprop_prefix xs ys = init' b `isPrefixOf` a
+  where a = contiguous (xs S.++ ys)
+        b = contiguous xs
+cprop_suffix xs ys = tail' c `isSuffixOf` a
+  where a = contiguous (xs S.++ ys)
+        c = contiguous ys
 
 data HashState
   = HashState {
