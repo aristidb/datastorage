@@ -38,14 +38,15 @@ hashCombine x y = x `rotateL` 1 `xor` y
 
 type Data = S.Vector Word8
 
-rollhash :: Data -> S.Vector Word64
-rollhash xs = S.postscanl hashCombine 0 $ S.zipWith (+>) hashed (S.drop window hashed)
-  where hashed = S.map hash xs
+roll :: S.Vector Word64 -> S.Vector Word64
+roll hashed = S.postscanl hashCombine 0 $ S.zipWith (+>) hashed (S.drop window hashed)
 
+contiguous :: Data -> [Data]
 contiguous xs = zipWith (\a b -> S.slice a (b - a) xs) (0:boundaries) boundaries
   where hashed = S.replicate window 0 S.++ S.map hash xs
-        rolled = S.postscanl hashCombine 0 $ S.zipWith (+>) hashed (S.drop window hashed)
-        boundaries = (++[S.length xs]) $ dropWhile (<window) $ S.toList $ S.map (+1) $ S.findIndices (\x -> x .&. mask == mask) rolled
+        rolled = roll hashed
+        markers = S.findIndices (\x -> x .&. mask == mask) rolled
+        boundaries = (++[S.length xs]) $ dropWhile (<window) $ S.toList $ S.map (+1) markers
 
 cprop_allInputIsOutput xs = S.concat (contiguous xs) == xs
 cprop_prefix xs ys = init' b `isPrefixOf` a
@@ -153,57 +154,6 @@ test xs = runEffect $ for (rollsplit (each xs)) (lift . print)
 
 test2 :: [Data] -> IO ()
 test2 xs = runEffect $ for (evalStateP initialState $ each xs >-> rollsplitP) (lift . print)
-
-{-
-data Output = Complete {output :: Data} | Partial {output :: Data}
-  deriving (Show)
-
-eat :: Monad m => Data -> Producer Output (StateT HashState m) ()
-eat x =
-  do
-    let len = S.length x
-        xh = S.map hash x
-    HashState h w <- lift get
-    h' <- chow h w (S.take window xh) (S.take window x)
-    h'' <- if len > window
-      then chow h' xh (S.drop window xh) (S.drop window x)
-      else return h'
-    update h'' (S.drop len w S.++ S.drop (len - window) xh)
-  where
-    update h w = assert (S.length w == window) $ lift $ put (HashState h w)
-    chow h old new dat = assert (S.length old >= S.length new && S.length new == S.length dat) $
-      do
-        let rolled = S.postscanl hashCombine h $
-                     S.zipWith xor old new
-            newH = S.last rolled
-            boundaries = S.map (+1) $ S.findIndices (\x -> x .&. mask == mask) rolled
-        let sliceAction a b = yield (Complete (S.slice a (b - a) dat)) >> return b
-        n <- S.foldM sliceAction 0 boundaries
-        when (n < S.length dat) $ yield (Partial (S.drop n dat))
-        return newH
-        -}
-
-{-
-split () = evalStateP initialState (forever eat)
-  where
-    initialState = HashState 0 (S.replicate window 0)
-
-wrap :: Monad m => Proxy a' a b' b m r -> Proxy a' a b' (Maybe b) m s
-wrap p = do
-  p //> respond . Just
-  forever $ respond Nothing
-
-recombine :: Monad m => () -> Pipe (Maybe Output) Data m ()
-recombine () = go S.empty
-  where
-    go s =
-      do
-        i <- request ()
-        case i of
-          Nothing -> return ()
-          Just (Partial x) -> go (s S.++ x)
-          Just (Complete x) -> respond (s S.++ x) >> go S.empty
--}
 
 lut :: S.Vector Word64
 lut = S.fromList [
