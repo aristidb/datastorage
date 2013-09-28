@@ -38,10 +38,14 @@ hashCombine x y = x `rotateL` 1 `xor` y
 
 type Data = S.Vector Word8
 
-contiguous xs = traceShow boundaries $ zipWith (\a b -> S.slice a (b - a) xs) boundaries (tail boundaries)
+rollhash :: Data -> S.Vector Word64
+rollhash xs = S.postscanl hashCombine 0 $ S.zipWith (+>) hashed (S.drop window hashed)
   where hashed = S.map hash xs
-        rolled = S.postscanl hashCombine 0 $ S.zipWith (+>) (S.drop window hashed) hashed
-        boundaries = (0:) . (++[S.length xs]) $ S.toList $ S.map (+(1+window)) $ S.findIndices (\x -> x .&. mask == mask) rolled
+
+contiguous xs = zipWith (\a b -> S.slice a (b - a) xs) (0:boundaries) boundaries
+  where hashed = S.replicate window 0 S.++ S.map hash xs
+        rolled = S.postscanl hashCombine 0 $ S.zipWith (+>) hashed (S.drop window hashed)
+        boundaries = (++[S.length xs]) $ dropWhile (<window) $ S.toList $ S.map (+1) $ S.findIndices (\x -> x .&. mask == mask) rolled
 
 cprop_allInputIsOutput xs = S.concat (contiguous xs) == xs
 cprop_prefix xs ys = init' b `isPrefixOf` a
@@ -110,7 +114,10 @@ rollsplit :: Monad m => Producer Data m () -> Producer Data m ()
 rollsplit p = recombine $ evalStateP initialState $ hoist lift p >-> rollsplitP
 
 rollsplitL :: [Data] -> [Data]
-rollsplitL xs = filter (not.S.null) . P.toList $ rollsplit (each xs)
+rollsplitL = filter (not.S.null) . rollsplitL'
+
+rollsplitL' :: [Data] -> [Data]
+rollsplitL' xs = P.toList $ rollsplit (each xs)
 
 instance (QC.Arbitrary a, S.Storable a) => QC.Arbitrary (S.Vector a) where
   arbitrary = fmap S.fromList QC.arbitrary
@@ -135,6 +142,8 @@ prop_concat xs ys = init' b `isPrefixOf` a && tail' c `isSuffixOf` a
         c = rollsplitL [ys]
 
 prop_valid = prop_allInputIsOutput QC..&. prop_inputSplit QC..&. prop_concat
+
+prop_eq xs = rollsplitL' [xs] == contiguous xs
 
 qc :: IO ()
 qc = QC.quickCheckWith (QC.stdArgs { QC.maxSuccess = 500 }) prop_valid
