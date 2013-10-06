@@ -10,11 +10,12 @@ import qualified Data.Vector.Storable as S
 import Pipes
 import Pipes.Lift
 import qualified Pipes.Prelude as P
-import Control.Monad.Trans.State.Strict
+import Control.Monad.State.Strict
 import Control.Exception (assert)
-import Control.Monad (when, forever)
 import qualified Test.QuickCheck as QC
 import Data.List
+import qualified Control.Lens as L
+import Control.Lens.Operators
 --import Debug.Trace
 
 window :: Int
@@ -64,13 +65,22 @@ cprop_valid = cprop_allInputIsOutput QC..&. cprop_prefix QC..&. cprop_suffix
 
 data HashState
   = HashState {
-      lastHash :: Word64
-    , lastWindow :: S.Vector Word64
-    , totalInput :: Int
+      _lastHash :: Word64
+    , _totalInput :: Int
+    , _lastWindow :: S.Vector Word64
     }
 
 initialState :: HashState
-initialState = HashState 0 (S.replicate window 0) 0
+initialState = HashState 0 0 (S.replicate window 0)
+
+hashState :: Word64 -> Int -> S.Vector Word64 -> HashState
+hashState h i w = assert (S.length w == window) $ HashState h i w
+
+innerState :: L.Lens' HashState (Word64, Int)
+innerState f (HashState h i w) = fmap (\(h', i') -> HashState h' i' w) (f (h, i))
+
+lastWindow :: L.Lens' HashState (S.Vector Word64)
+lastWindow f (HashState h i w) = fmap (HashState h i) (f w)
 
 data Output = Partial Data | Complete Data
   deriving (Show)
@@ -83,16 +93,15 @@ rollsplitP =
     let len = S.length x
         xh = S.map hash x
     when (len > 0) $ do
-      HashState h w i <- lift get
-      (h', i') <- chow h w i (S.take window xh) (S.take window x)
-      (h'', i'') <- if len > window
-        then chow h' xh i' (S.drop window xh) (S.drop window x)
-        else return (h', i')
-      update h'' (S.drop len w S.++ S.drop (len - window) xh) i''
+      w <- L.use lastWindow
+      hoist (L.zoom innerState) $ do
+        chow w (S.take window xh) (S.take window x)
+        when (len > window) $ chow xh (S.drop window xh) (S.drop window x)
+      lastWindow .= (S.drop len w S.++ S.drop (len - window) xh)
   where
-    update h w p = assert (S.length w == window) $ lift $ put (HashState h w p)
-    chow h old input new dat = assert (S.length old >= S.length new && S.length new == S.length dat) $
+    chow old new dat = assert (S.length old >= S.length new && S.length new == S.length dat) $
       do
+        (h, input) <- get
         let rolled = S.postscanl hashCombine h $
                      S.zipWith (+>) old new
             newH = S.last rolled
@@ -104,7 +113,7 @@ rollsplitP =
               return b
         n <- S.foldM sliceAction 0 appliedBoundaries
         when (n < S.length dat) $ yield (Partial (S.drop n dat))
-        return (newH, input+S.length dat)
+        put (newH, input+S.length dat)
 
 recombine :: Monad m => Producer Output m a -> Producer Data m a
 recombine = loop S.empty
