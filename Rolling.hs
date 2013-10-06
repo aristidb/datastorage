@@ -15,7 +15,7 @@ import Control.Exception (assert)
 import Control.Monad (when, forever)
 import qualified Test.QuickCheck as QC
 import Data.List
-import Debug.Trace
+--import Debug.Trace
 
 window :: Int
 window = 16
@@ -48,13 +48,19 @@ contiguous xs = zipWith (\a b -> S.slice a (b - a) xs) (0:boundaries) boundaries
         markers = S.findIndices (\x -> x .&. mask == mask) rolled
         boundaries = (++[S.length xs]) $ dropWhile (<window) $ S.toList $ S.map (+1) markers
 
-cprop_allInputIsOutput xs = S.concat (contiguous xs) == xs
-cprop_prefix xs ys = init' b `isPrefixOf` a
-  where a = contiguous (xs S.++ ys)
-        b = contiguous xs
-cprop_suffix xs ys = tail' c `isSuffixOf` a
-  where a = contiguous (xs S.++ ys)
-        c = contiguous ys
+cprop_allInputIsOutput :: QC.Property
+cprop_allInputIsOutput = QC.forAll arbitraryVector $ \xs -> S.concat (contiguous xs) == xs
+
+cprop_prefix :: QC.Property
+cprop_prefix = QC.forAll arbitraryVector $ \xs -> QC.forAll arbitraryVector $ \ys ->
+  let a = contiguous (xs S.++ ys); b = contiguous xs in init' b `isPrefixOf` a
+
+cprop_suffix :: QC.Property
+cprop_suffix = QC.forAll arbitraryVector $ \xs -> QC.forAll arbitraryVector $ \ys ->
+  let a = contiguous (xs S.++ ys); c = contiguous ys in tail' c `isSuffixOf` a
+
+cprop_valid :: QC.Property
+cprop_valid = cprop_allInputIsOutput QC..&. cprop_prefix QC..&. cprop_suffix
 
 data HashState
   = HashState {
@@ -120,8 +126,8 @@ rollsplitL = filter (not.S.null) . rollsplitL'
 rollsplitL' :: [Data] -> [Data]
 rollsplitL' xs = P.toList $ rollsplit (each xs)
 
-instance (QC.Arbitrary a, S.Storable a) => QC.Arbitrary (S.Vector a) where
-  arbitrary = fmap S.fromList QC.arbitrary
+arbitraryVector :: (QC.Arbitrary a, S.Storable a) => QC.Gen (S.Vector a)
+arbitraryVector = fmap S.fromList QC.arbitrary
 
 init' :: [a] -> [a]
 init' xs = take (length xs - 1) xs
@@ -129,25 +135,32 @@ init' xs = take (length xs - 1) xs
 tail' :: [a] -> [a]
 tail' xs = drop 1 xs
 
-prop_allInputIsOutput xs = S.concat (rollsplitL xs) == S.concat xs
-prop_inputSplit xs = rollsplitL xs == rollsplitL [S.concat xs]
-prop_prefix xs ys = init' b `isPrefixOf` a
-  where a = rollsplitL [xs, ys]
-        b = rollsplitL [xs]
-prop_suffix xs ys = tail' c `isSuffixOf` a
-  where a = rollsplitL [xs, ys]
-        c = rollsplitL [ys]
-prop_concat xs ys = init' b `isPrefixOf` a && tail' c `isSuffixOf` a
-  where a = rollsplitL [xs, ys]
-        b = rollsplitL [xs]
-        c = rollsplitL [ys]
+prop_allInputIsOutput :: QC.Property
+prop_allInputIsOutput = QC.forAll (QC.listOf arbitraryVector) $ \xs -> S.concat (rollsplitL xs) == S.concat xs
 
-prop_valid = prop_allInputIsOutput QC..&. prop_inputSplit QC..&. prop_concat
 
-prop_eq xs = rollsplitL' [xs] == contiguous xs
+prop_inputSplit :: QC.Property
+prop_inputSplit = QC.forAll (QC.listOf arbitraryVector) $ \xs -> rollsplitL xs == rollsplitL [S.concat xs]
+
+prop_prefix :: QC.Property
+prop_prefix = QC.forAll arbitraryVector $ \xs -> QC.forAll arbitraryVector $ \ys ->
+  let a = rollsplitL [xs, ys]; b = rollsplitL [xs] in init' b `isPrefixOf` a
+
+prop_suffix :: QC.Property
+prop_suffix = QC.forAll arbitraryVector $ \xs -> QC.forAll arbitraryVector $ \ys ->
+  let a = rollsplitL [xs, ys]; c = rollsplitL [ys] in tail' c `isSuffixOf` a
+
+prop_concat :: QC.Property
+prop_concat = prop_prefix QC..&. prop_suffix
+
+prop_eq :: QC.Property
+prop_eq = QC.forAll arbitraryVector $ \xs -> rollsplitL' [xs] == contiguous xs
+
+prop_valid :: QC.Property
+prop_valid = prop_allInputIsOutput QC..&. prop_inputSplit QC..&. prop_concat QC..&. prop_eq
 
 qc :: IO ()
-qc = QC.quickCheckWith (QC.stdArgs { QC.maxSuccess = 500 }) prop_valid
+qc = QC.quickCheckWith (QC.stdArgs { QC.maxSuccess = 5000 }) (cprop_valid QC..&. prop_valid)
 
 test :: [Data] -> IO ()
 test xs = runEffect $ for (rollsplit (each xs)) (lift . print)
