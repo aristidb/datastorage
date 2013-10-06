@@ -50,14 +50,14 @@ contiguous xs = zipWith (\a b -> S.slice a (b - a) xs) (0:boundaries) boundaries
         boundaries = (++[S.length xs]) $ dropWhile (<window) $ S.toList $ S.map (+1) markers
 
 cprop_allInputIsOutput :: QC.Property
-cprop_allInputIsOutput = QC.forAll arbitraryVector $ \xs -> S.concat (contiguous xs) == xs
+cprop_allInputIsOutput = QC.forAll inputVector $ \xs -> S.concat (contiguous xs) == xs
 
 cprop_prefix :: QC.Property
-cprop_prefix = QC.forAll arbitraryVector $ \xs -> QC.forAll arbitraryVector $ \ys ->
+cprop_prefix = QC.forAll inputVector $ \xs -> QC.forAll inputVector $ \ys ->
   let a = contiguous (xs S.++ ys); b = contiguous xs in init' b `isPrefixOf` a
 
 cprop_suffix :: QC.Property
-cprop_suffix = QC.forAll arbitraryVector $ \xs -> QC.forAll arbitraryVector $ \ys ->
+cprop_suffix = QC.forAll inputVector $ \xs -> QC.forAll inputVector $ \ys ->
   let a = contiguous (xs S.++ ys); c = contiguous ys in tail' c `isSuffixOf` a
 
 cprop_valid :: QC.Property
@@ -135,8 +135,13 @@ rollsplitL = filter (not.S.null) . rollsplitL'
 rollsplitL' :: [Data] -> [Data]
 rollsplitL' xs = P.toList $ rollsplit (each xs)
 
-arbitraryVector :: (QC.Arbitrary a, S.Storable a) => QC.Gen (S.Vector a)
-arbitraryVector = fmap S.fromList QC.arbitrary
+inputVector :: (QC.Arbitrary a, S.Storable a) => QC.Gen (S.Vector a)
+inputVector = QC.sized $ \n -> do
+  k <- QC.choose (0,n)
+  a <- QC.choose (0,window)
+  let len = max 0 $ (k-1)*window+a
+  fmap S.fromList $ QC.vector len
+
 
 init' :: [a] -> [a]
 init' xs = take (length xs - 1) xs
@@ -145,25 +150,25 @@ tail' :: [a] -> [a]
 tail' xs = drop 1 xs
 
 prop_allInputIsOutput :: QC.Property
-prop_allInputIsOutput = QC.forAll (QC.listOf arbitraryVector) $ \xs -> S.concat (rollsplitL xs) == S.concat xs
+prop_allInputIsOutput = QC.forAll (QC.listOf inputVector) $ \xs -> S.concat (rollsplitL xs) == S.concat xs
 
 
 prop_inputSplit :: QC.Property
-prop_inputSplit = QC.forAll (QC.listOf arbitraryVector) $ \xs -> rollsplitL xs == rollsplitL [S.concat xs]
+prop_inputSplit = QC.forAll (QC.listOf inputVector) $ \xs -> rollsplitL xs == rollsplitL [S.concat xs]
 
 prop_prefix :: QC.Property
-prop_prefix = QC.forAll arbitraryVector $ \xs -> QC.forAll arbitraryVector $ \ys ->
+prop_prefix = QC.forAll inputVector $ \xs -> QC.forAll inputVector $ \ys ->
   let a = rollsplitL [xs, ys]; b = rollsplitL [xs] in init' b `isPrefixOf` a
 
 prop_suffix :: QC.Property
-prop_suffix = QC.forAll arbitraryVector $ \xs -> QC.forAll arbitraryVector $ \ys ->
+prop_suffix = QC.forAll inputVector $ \xs -> QC.forAll inputVector $ \ys ->
   let a = rollsplitL [xs, ys]; c = rollsplitL [ys] in tail' c `isSuffixOf` a
 
 prop_concat :: QC.Property
 prop_concat = prop_prefix QC..&. prop_suffix
 
 prop_eq :: QC.Property
-prop_eq = QC.forAll arbitraryVector $ \xs -> rollsplitL' [xs] == contiguous xs
+prop_eq = QC.forAll inputVector $ \xs -> rollsplitL' [xs] == contiguous xs
 
 prop_valid :: QC.Property
 prop_valid = prop_allInputIsOutput QC..&. prop_inputSplit QC..&. prop_concat QC..&. prop_eq
