@@ -19,10 +19,10 @@ import Control.Lens.Operators
 --import Debug.Trace
 
 window :: Int
-window = 16
+window = 128
 
 mask :: Word64
-mask = 0xf -- 0x1fff
+mask = 0x1fff
 
 hash :: Word8 -> Word64
 hash x = lut S.! fromIntegral x
