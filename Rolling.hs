@@ -102,10 +102,9 @@ rollsplitP =
     chow old new dat = assert (S.length old >= S.length new && S.length new == S.length dat) $
       do
         (h, input) <- get
-        let rolled = S.postscanl hashCombine h $
-                     S.zipWith (+>) old new
+        let rolled = S.scanl hashCombine h $ S.zipWith (+>) old new
             newH = S.last rolled
-            boundaries = S.map (+1) $ S.findIndices (\x -> x .&. mask == mask) rolled
+            boundaries = S.findIndices (\x -> x .&. mask == mask) rolled
             start = max (window - input) 0
             appliedBoundaries = S.dropWhile (< start) boundaries
         let sliceAction a b = do
