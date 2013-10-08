@@ -114,25 +114,32 @@ rollsplitP =
         when (n < S.length dat) $ yield (Partial (S.drop n dat))
         put (newH, input+S.length dat)
 
-recombine :: Monad m => Producer Output m a -> Producer Data m a
-recombine = loop S.empty
+recombine :: Monad m => Int -> Int -> Producer Output m a -> Producer Data m a
+recombine nmin nmax = loop S.empty
   where
     loop d p =
-      do
-        e <- lift (next p)
-        case e of
-          Left v -> yield d >> return v
-          Right (Complete x, p') -> yield (d S.++ x) >> loop S.empty p'
-          Right (Partial x, p') -> loop (d S.++ x) p'
+      case S.length d of
+        n | n < nmax ->
+            do e <- lift (next p)
+               case e of
+                 Left v -> yield d >> return v
+                 Right (Complete x, p') -> let d' = d S.++ x
+                                           in case S.length d' of
+                                                m | m >= nmin -> yield (d S.++ x) >> loop S.empty p'
+                                                  | otherwise -> loop (d S.++ x) p'
+                 Right (Partial x, p') -> loop (d S.++ x) p'
+          | otherwise ->
+            do yield (S.take nmax d)
+               loop (S.drop nmax d) p
 
-rollsplit :: Monad m => Producer Data m () -> Producer Data m ()
-rollsplit p = recombine $ evalStateP initialState $ hoist lift p >-> rollsplitP
+rollsplit :: Monad m => Int -> Int -> Producer Data m () -> Producer Data m ()
+rollsplit nmin nmax p = recombine nmin nmax $ evalStateP initialState $ hoist lift p >-> rollsplitP
 
 rollsplitL :: [Data] -> [Data]
 rollsplitL = filter (not.S.null) . rollsplitL'
 
 rollsplitL' :: [Data] -> [Data]
-rollsplitL' xs = P.toList $ rollsplit (each xs)
+rollsplitL' xs = P.toList $ rollsplit 0 (maxBound :: Int) (each xs)
 
 inputVector :: (QC.Arbitrary a, S.Storable a) => QC.Gen (S.Vector a)
 inputVector = QC.sized $ \n -> do
@@ -175,8 +182,8 @@ prop_valid = prop_allInputIsOutput QC..&. prop_inputSplit QC..&. prop_concat QC.
 qc :: IO ()
 qc = QC.quickCheckWith (QC.stdArgs { QC.maxSuccess = 5000 }) (cprop_valid QC..&. prop_valid)
 
-test :: [Data] -> IO ()
-test xs = runEffect $ for (rollsplit (each xs)) (lift . print)
+test :: Int -> Int -> [Data] -> IO ()
+test nmin nmax xs = runEffect $ for (rollsplit nmin nmax (each xs)) (lift . print)
 
 test2 :: [Data] -> IO ()
 test2 xs = runEffect $ for (evalStateP initialState $ each xs >-> rollsplitP) (lift . print)
