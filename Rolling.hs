@@ -82,8 +82,12 @@ innerState f (HashState h i w) = fmap (\(h', i') -> HashState h' i' w) (f (h, i)
 lastWindow :: L.Lens' HashState (S.Vector Word64)
 lastWindow f (HashState h i w) = fmap (HashState h i) (f w)
 
-data Output = Partial Data | Complete Data
+data Output = Partial { getOutput :: Data } | Complete { getOutput :: Data }
   deriving (Show)
+
+isComplete :: Output -> Bool
+isComplete (Partial _) = False
+isComplete (Complete _) = True
 
 rollsplitP :: Monad m => Pipe Data Output (StateT HashState m) ()
 rollsplitP =
@@ -123,11 +127,10 @@ recombine nmin nmax = loop S.empty
             do e <- lift (next p)
                case e of
                  Left v -> yield d >> return v
-                 Right (Complete x, p') -> let d' = d S.++ x
-                                           in case S.length d' of
-                                                m | m >= nmin -> yield (d S.++ x) >> loop S.empty p'
-                                                  | otherwise -> loop (d S.++ x) p'
-                 Right (Partial x, p') -> loop (d S.++ x) p'
+                 Right (output, p') -> if isComplete output && S.length d' >= nmin
+                                       then yield d' >> loop S.empty p'
+                                       else loop d' p'
+                   where d' = d S.++ getOutput output
           | otherwise ->
             do yield (S.take nmax d)
                loop (S.drop nmax d) p
