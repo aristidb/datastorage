@@ -105,7 +105,7 @@ rollsplitP =
         let rolled = S.scanl hashCombine h $ S.zipWith (+>) old new
             newH = S.last rolled
             boundaries = S.findIndices (\x -> x .&. mask == mask) rolled
-            start = max (window - input) 0
+            start = max (window - input) 1
             appliedBoundaries = S.dropWhile (< start) boundaries
         let sliceAction a b = do
               yield (Complete (S.slice a (b - a) dat))
