@@ -40,14 +40,14 @@ hashCombine x y = x `rotateL` 1 `xor` y
 type Data = S.Vector Word8
 
 roll :: S.Vector Word64 -> S.Vector Word64
-roll hashed = S.postscanl hashCombine 0 $ S.zipWith (+>) hashed (S.drop window hashed)
+roll hashed = S.scanl hashCombine 0 $ S.zipWith (+>) hashed (S.drop window hashed)
 
 contiguous :: Data -> [Data]
 contiguous xs = zipWith (\a b -> S.slice a (b - a) xs) (0:boundaries) boundaries
   where hashed = S.replicate window 0 S.++ S.map hash xs
         rolled = roll hashed
         markers = S.findIndices (\x -> x .&. mask == mask) rolled
-        boundaries = (++[S.length xs]) $ dropWhile (<window) $ S.toList $ S.map (+1) markers
+        boundaries = (++[S.length xs]) $ dropWhile (<window) $ S.toList markers
 
 cprop_allInputIsOutput :: QC.Property
 cprop_allInputIsOutput = QC.forAll inputVector $ \xs -> S.concat (contiguous xs) == xs
