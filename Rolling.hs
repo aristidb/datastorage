@@ -19,10 +19,10 @@ import Control.Lens.Operators
 --import Debug.Trace
 
 window :: Int
-window = 128
+window = 16 --128
 
 mask :: Word64
-mask = 0x1fff
+mask = 0xf --0x1fff
 
 hash :: Word8 -> Word64
 hash x = lut S.! fromIntegral x
@@ -40,11 +40,16 @@ hashCombine x y = x `rotateL` 1 `xor` y
 type Data = S.Vector Word8
 
 roll :: S.Vector Word64 -> S.Vector Word64
-roll hashed = S.scanl hashCombine 0 $ S.zipWith (+>) hashed (S.drop window hashed)
+roll hashed = S.scanl hashCombine 0 $ S.zipWith (+>) (S.replicate window 0 S.++ hashed) hashed
+
+prop_rolls :: QC.Property
+prop_rolls = QC.forAll inputVector $ \a ->
+             QC.forAll (QC.suchThat inputVector (\v -> S.length v >= window)) $ \b ->
+               S.last (roll b) == S.last (roll (a S.++ b))
 
 contiguous :: Data -> [Data]
 contiguous xs = zipWith (\a b -> S.slice a (b - a) xs) (0:boundaries) boundaries
-  where hashed = S.replicate window 0 S.++ S.map hash xs
+  where hashed = S.map hash xs
         rolled = roll hashed
         markers = S.findIndices (\x -> x .&. mask == mask) rolled
         boundaries = (++[S.length xs]) $ dropWhile (<window) $ S.toList markers
@@ -183,7 +188,7 @@ prop_valid :: QC.Property
 prop_valid = prop_allInputIsOutput QC..&. prop_inputSplit QC..&. prop_concat QC..&. prop_eq
 
 qc :: IO ()
-qc = QC.quickCheckWith (QC.stdArgs { QC.maxSuccess = 5000 }) (cprop_valid QC..&. prop_valid)
+qc = QC.quickCheckWith (QC.stdArgs { QC.maxSuccess = 700 }) (cprop_valid QC..&. prop_valid)
 
 test :: Int -> Int -> [Data] -> IO ()
 test nmin nmax xs = runEffect $ for (rollsplit nmin nmax (each xs)) (lift . print)
