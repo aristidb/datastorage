@@ -1,6 +1,6 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving, BangPatterns, NoMonomorphismRestriction #-}
 -- vim: sts=2:sw=2:ai:et
-module Rolling where
+--module Rolling where
 
 import Data.Word
 import Data.Bits
@@ -16,13 +16,15 @@ import qualified Test.QuickCheck as QC
 import Data.List
 import qualified Control.Lens as L
 import Control.Lens.Operators
+import Control.DeepSeq
+import Criterion.Main
 --import Debug.Trace
 
 window :: Int
-window = 16 --128
+window = 128
 
 mask :: Word64
-mask = 0xf --0x1fff
+mask = 0x1ff
 
 hash :: Word8 -> Word64
 hash x = lut S.! fromIntegral x
@@ -262,4 +264,12 @@ lut = S.fromList [
     0x47b81bb8dda336aa, 0x7c0b4cab5dffb32e, 0x020a4567a37ada75, 0x66325b8ce0bc3890,
     0x566e9b6d6a194d5e, 0x53efbb71787c4049, 0xee775a2e794219de, 0xa65c279ca51a6a46,
     0xaac56091fcec9c38, 0x0b34953b386ed0c4, 0xde46839785d1b945, 0x623a65d725974df2
+  ]
+
+benchData :: [Data]
+benchData = force $ map (\i -> S.generate 4096 (\j -> (fromInteger i + fromIntegral j) .&. 255)) [1..10000]
+
+main :: IO ()
+main = defaultMain [
+    bench "simple" $ nf rollsplitL' benchData
   ]
