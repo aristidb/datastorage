@@ -37,9 +37,11 @@ rhash old new h = h `rotateL` 1 `xor` (hash old `rotateL` window) `xor` hash new
 
 (+>) :: Word64 -> Word64 -> Word64
 o +> n = (o `rotateL` window) `xor` n
+{-# INLINE (+>) #-}
 
 hashCombine :: Word64 -> Word64 -> Word64
 hashCombine x y = x `rotateL` 1 `xor` y
+{-# INLINE hashCombine #-}
 
 type Data = S.Vector Word8
 
@@ -74,9 +76,15 @@ cprop_valid = cprop_allInputIsOutput QC..&. cprop_prefix QC..&. cprop_suffix
 
 data HashState
   = HashState {
-      _lastHash :: Word64
-    , _totalInput :: Int
-    , _lastWindow :: S.Vector Word64
+      _lastHash :: {-# UNBOXED #-} !Word64
+    , _totalInput :: {-# UNBOXED #-} !Int
+    , _lastWindow :: !(S.Vector Word64)
+    }
+
+data HashInner
+  = HashInner {
+      _innerLastHash :: {-# UNBOXED #-} !Word64
+    , _innerTotalInput :: {-# UNBOXED #-} !Int
     }
 
 initialState :: HashState
@@ -85,8 +93,8 @@ initialState = HashState 0 0 (S.replicate window 0)
 hashState :: Word64 -> Int -> S.Vector Word64 -> HashState
 hashState h i w = assert (S.length w == window) $ HashState h i w
 
-innerState :: L.Lens' HashState (Word64, Int)
-innerState f (HashState h i w) = fmap (\(h', i') -> HashState h' i' w) (f (h, i))
+innerState :: L.Lens' HashState HashInner
+innerState f (HashState h i w) = fmap (\(HashInner h' i') -> HashState h' i' w) (f (HashInner h i))
 
 lastWindow :: L.Lens' HashState (S.Vector Word64)
 lastWindow f (HashState h i w) = fmap (HashState h i) (f w)
@@ -114,18 +122,18 @@ rollsplitP =
   where
     chow old new dat = assert (S.length old >= S.length new && S.length new == S.length dat) $
       do
-        (h, input) <- get
+        HashInner h input <- get
         let rolled = S.scanl hashCombine h $ S.zipWith (+>) old new
             newH = S.last rolled
             boundaries = S.findIndices (\x -> x .&. mask == mask) rolled
             start = max (window - input) 1
             appliedBoundaries = S.dropWhile (< start) boundaries
         let sliceAction a b = do
-              yield (Complete (S.slice a (b - a) dat))
+              yield (Complete (S.unsafeSlice a (b - a) dat))
               return b
         n <- S.foldM sliceAction 0 appliedBoundaries
         when (n < S.length dat) $ yield (Partial (S.drop n dat))
-        put (newH, input+S.length dat)
+        put (HashInner newH $ input+S.length dat)
 
 recombine :: Monad m => Int -> Int -> Producer Output m a -> Producer Data m a
 recombine nmin nmax = loop S.empty
@@ -267,6 +275,11 @@ lut = S.fromList [
     0x566e9b6d6a194d5e, 0x53efbb71787c4049, 0xee775a2e794219de, 0xa65c279ca51a6a46,
     0xaac56091fcec9c38, 0x0b34953b386ed0c4, 0xde46839785d1b945, 0x623a65d725974df2
   ]
+
+{-
+stats :: [Int] -> IO ()
+stats = gg
+-}
 
 main :: IO ()
 main = do
