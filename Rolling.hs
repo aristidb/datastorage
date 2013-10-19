@@ -6,6 +6,8 @@ import Data.Word
 import Data.Bits
 --import qualified Data.Vector.Generic as G
 import qualified Data.Vector.Storable as S
+import qualified Data.Vector.Storable.ByteString as S
+import qualified Data.ByteString as B
 --import Data.Monoid
 import Pipes
 import Pipes.Lift
@@ -21,10 +23,10 @@ import Criterion.Main
 --import Debug.Trace
 
 window :: Int
-window = 128
+window = 256
 
 mask :: Word64
-mask = 0x1ff
+mask = 0x1fff
 
 hash :: Word8 -> Word64
 hash x = lut S.! fromIntegral x
@@ -266,10 +268,13 @@ lut = S.fromList [
     0xaac56091fcec9c38, 0x0b34953b386ed0c4, 0xde46839785d1b945, 0x623a65d725974df2
   ]
 
-benchData :: [Data]
-benchData = force $ map (\i -> S.generate 4096 (\j -> (fromInteger i + fromIntegral j) .&. 255)) [1..10000]
-
 main :: IO ()
-main = defaultMain [
-    bench "simple" $ nf rollsplitL' benchData
-  ]
+main = do
+  benchRawData <- fmap S.byteStringToVector (B.readFile "bench.dat")
+  let benchData bs = force $ map (\p -> S.slice p bs benchRawData) [0,bs..S.length benchRawData-1]
+  print $ map S.length (rollsplitL' $ benchData 4096)
+  print $ map S.length (rollsplitL' $ benchData 65536)
+  defaultMain [
+    let dat = benchData 4096 in dat `seq` bench "simple 4096" $ nf rollsplitL' dat,
+    let dat = benchData 65536 in dat `seq` bench "simple 65536" $ nf rollsplitL' dat
+    ]
