@@ -290,6 +290,7 @@ main = do
   defaultMain [
     let dat = benchData 4096 in dat `seq` bench "simple 4096" $ nf rollsplitL' dat,
     let dat = benchData 65536 in dat `seq` bench "simple 65536" $ nf rollsplitL' dat,
+    let dat = benchData 1048576 in dat `seq` bench "simple 1048576" $ nf rollsplitL' dat,
     let dat = benchData 4096 in dat `seq` bench "clamped 4096" $ nf (P.toList . rollsplit 1024 16386 . each)  dat,
     let dat = benchData 65536 in dat `seq` bench "clamped 65536" $ nf (P.toList . rollsplit 1024 16386 . each) dat
     ]
