@@ -76,15 +76,15 @@ cprop_valid = cprop_allInputIsOutput QC..&. cprop_prefix QC..&. cprop_suffix
 
 data HashState
   = HashState {
-      _lastHash :: {-# UNBOXED #-} !Word64
-    , _totalInput :: {-# UNBOXED #-} !Int
+      _lastHash :: {-# UNPACK #-} !Word64
+    , _totalInput :: {-# UNPACK #-} !Int
     , _lastWindow :: !(S.Vector Word64)
     }
 
 data HashInner
   = HashInner {
-      _innerLastHash :: {-# UNBOXED #-} !Word64
-    , _innerTotalInput :: {-# UNBOXED #-} !Int
+      _innerLastHash :: {-# UNPACK #-} !Word64
+    , _innerTotalInput :: {-# UNPACK #-} !Int
     }
 
 initialState :: HashState
