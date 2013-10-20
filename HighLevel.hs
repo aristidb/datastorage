@@ -1,24 +1,22 @@
 {-# LANGUAGE DataKinds, KindSignatures, GADTs, RankNTypes #-}
 module HighLevel where
 
-import Data.ByteString as B
-import Prelude hiding (read)
+import Pipes
+import Prelude hiding (read, splitAt)
 
-data ObjectKind = V | S
+data Object (m :: * -> *) a = Object -- opaque for now
 
-data Object :: ObjectKind -> * where
-  Stored :: ByteString -> Object a
-  Take :: Int -> Object a -> Object V
+read :: Object m a -> Producer a m ()
+read = undefined
 
-view :: Object S -> Object a
-view (Stored bs) = Stored bs
+write :: Producer a m () -> Object m a
+write = undefined
 
-read :: Object a -> ByteString
-read (Stored bs) = bs
-read (Take n x) = B.take n $ read x
+slice :: Int -> Int -> Object m a
+slice = undefined
 
-{-
-store :: Object a -> IO (Object S)
-store (Stored bs) = return (Stored bs)
-store (Take _n _x) = undefined
--}
+splitAt :: Int -> Object m a -> (Object m a, Object m a)
+splitAt = undefined
+
+append :: Object m a -> Object m a -> Object m a
+append = undefined
