@@ -4,9 +4,10 @@
 
 import Data.Word
 import Data.Bits
---import qualified Data.Vector.Generic as G
 import qualified Data.Vector.Storable as S
+import qualified Data.Vector.Storable.Mutable as SM
 import qualified Data.Vector.Storable.ByteString as S
+import Control.Monad.ST
 import qualified Data.ByteString as B
 --import Data.Monoid
 import Pipes
@@ -27,6 +28,10 @@ window = 256
 
 mask :: Word64
 mask = 0x1fff
+
+testMask :: Word64 -> Bool
+testMask x = x .&. mask == mask
+{-# INLINE testMask #-}
 
 hash :: Word8 -> Word64
 hash x = lut S.! fromIntegral x
@@ -57,7 +62,7 @@ contiguous :: Data -> [Data]
 contiguous xs = zipWith (\a b -> S.slice a (b - a) xs) (0:boundaries) boundaries
   where hashed = S.map hash xs
         rolled = roll hashed
-        markers = S.findIndices (\x -> x .&. mask == mask) rolled
+        markers = S.findIndices testMask rolled
         boundaries = (++[S.length xs]) $ dropWhile (<window) $ S.toList markers
 
 cprop_allInputIsOutput :: QC.Property
@@ -106,6 +111,24 @@ isComplete :: Output -> Bool
 isComplete (Partial _) = False
 isComplete (Complete _) = True
 
+rollingBoundaries :: S.Vector Word64 -> S.Vector Word64 -> Word64 -> (Word64, S.Vector Int)
+rollingBoundaries old new h0 = runST $ do mv <- SM.new (S.length new)
+                                          (h', len) <- runner mv
+                                          v <- S.unsafeFreeze (SM.take len mv)
+                                          return (h', v)
+  where
+    runner mv = go h0 0 0
+      where
+        go !h !iOut !iIn | iIn < S.length new =
+                           do iOut' <- case testMask h of
+                                         True -> do SM.unsafeWrite mv iOut iIn
+                                                    return (iOut + 1)
+                                         False -> return iOut
+                              let hi = (old `S.unsafeIndex` iIn) +> (new `S.unsafeIndex` iIn)
+                                  h' = hashCombine h hi
+                              go h' iOut' (iIn + 1)
+                         | otherwise = return (h, iOut)
+
 rollsplitP :: Monad m => Pipe Data Output (StateT HashState m) ()
 rollsplitP =
   forever $
@@ -123,9 +146,7 @@ rollsplitP =
     chow old new dat = assert (S.length old >= S.length new && S.length new == S.length dat) $
       do
         HashInner h input <- get
-        let rolled = S.scanl hashCombine h $ S.zipWith (+>) old new
-            newH = S.last rolled
-            boundaries = S.findIndices (\x -> x .&. mask == mask) rolled
+        let (newH, boundaries) = rollingBoundaries old new h
             start = max (window - input) 1
             appliedBoundaries = S.dropWhile (< start) boundaries
         let sliceAction a b = do
