@@ -20,7 +20,7 @@ import qualified Control.Lens as L
 import Control.Lens.Operators
 import Control.DeepSeq
 import Criterion.Main
---import Debug.Trace
+import Debug.Trace
 
 window :: Int
 window = 16 --256
@@ -40,17 +40,18 @@ rhash :: Word8 -> Word8 -> Word64 -> Word64
 rhash old new h = h `rotateL` 1 `xor` (hash old `rotateL` window) `xor` hash new
 
 (+>) :: Word64 -> Word64 -> Word64
-o +> n = (o `rotateL` window) `xor` n
+(+>) !o !n = (o `rotateL` window) `xor` n
 {-# INLINE (+>) #-}
 
 hashCombine :: Word64 -> Word64 -> Word64
-hashCombine x y = x `rotateL` 1 `xor` y
+hashCombine !x !y = x `rotateL` 1 `xor` y
 {-# INLINE hashCombine #-}
 
 type Data = S.Vector Word8
 
 roll :: S.Vector Word64 -> S.Vector Word64
-roll hashed = S.postscanl hashCombine 0 $ S.zipWith (+>) (S.replicate window 0 S.++ hashed) hashed
+roll hashed = S.postscanl hashCombine h (S.zipWith (+>) hashed (S.drop window hashed))
+  where h = S.foldl' hashCombine 0 (S.take window hashed)
 
 prop_rolls :: QC.Property
 prop_rolls = QC.forAll inputVector $ \a ->
@@ -62,7 +63,7 @@ contiguous xs = zipWith (\a b -> S.slice a (b - a) xs) (0:boundaries) boundaries
   where hashed = S.map hash xs
         rolled = roll hashed
         markers = S.findIndices testMask rolled
-        boundaries = (++[S.length xs]) $ dropWhile (<window) $ map (+1) $ S.toList markers
+        boundaries = (++[S.length xs]) $ map (+(window+1)) $ S.toList markers
 
 cprop_allInputIsOutput :: QC.Property
 cprop_allInputIsOutput = QC.forAll inputVector $ \xs -> S.concat (contiguous xs) == xs
@@ -81,27 +82,17 @@ cprop_valid = cprop_allInputIsOutput QC..&. cprop_prefix QC..&. cprop_suffix
 data HashState
   = HashState {
       _lastHash :: {-# UNPACK #-} !Word64
-    , _totalInput :: {-# UNPACK #-} !Int
-    , _lastWindow :: !(S.Vector Word64)
-    }
-
-data HashInner
-  = HashInner {
-      _innerLastHash :: {-# UNPACK #-} !Word64
-    , _innerTotalInput :: {-# UNPACK #-} !Int
+    , _lastWindow :: !Data
     }
 
 initialState :: HashState
-initialState = HashState 0 0 (S.replicate window 0)
+initialState = HashState 0 S.empty
 
-hashState :: Word64 -> Int -> S.Vector Word64 -> HashState
-hashState h i w = assert (S.length w == window) $ HashState h i w
+lastHash :: L.Lens' HashState Word64
+lastHash f (HashState h w) = fmap (\h' -> HashState h' w) (f h)
 
-innerState :: L.Lens' HashState HashInner
-innerState f (HashState h i w) = fmap (\(HashInner h' i') -> HashState h' i' w) (f (HashInner h i))
-
-lastWindow :: L.Lens' HashState (S.Vector Word64)
-lastWindow f (HashState h i w) = fmap (HashState h i) (f w)
+lastWindow :: L.Lens' HashState Data
+lastWindow f (HashState h w) = fmap (HashState h) (f w)
 
 data Output = Partial { getOutput :: Data } | Complete { getOutput :: Data }
   deriving (Show)
@@ -110,7 +101,7 @@ isComplete :: Output -> Bool
 isComplete (Partial _) = False
 isComplete (Complete _) = True
 
-rollingBoundaries :: S.Vector Word64 -> S.Vector Word64 -> Word64 -> (Word64, S.Vector Int)
+rollingBoundaries :: Data -> Data -> Word64 -> (Word64, S.Vector Int)
 rollingBoundaries old new h0 = runST $ do mv <- SM.new (S.length new)
                                           (h', len) <- runner mv
                                           v <- S.unsafeFreeze (SM.take len mv)
@@ -120,7 +111,7 @@ rollingBoundaries old new h0 = runST $ do mv <- SM.new (S.length new)
       where
         go !h !iOut !iIn | iIn < S.length new =
                            do
-                              let hi = (old `S.unsafeIndex` iIn) +> (new `S.unsafeIndex` iIn)
+                              let hi = hash (old `S.unsafeIndex` iIn) +> hash (new `S.unsafeIndex` iIn)
                                   h' = hashCombine h hi
                               iOut' <- case testMask h' of
                                          True -> do SM.unsafeWrite mv iOut (iIn + 1)
@@ -134,27 +125,38 @@ rollsplitP =
   forever $
   do
     x <- await
-    let len = S.length x
-        xh = S.map hash x
-    when (len > 0) $ do
-      w <- L.use lastWindow
-      hoist (L.zoom innerState) $ do
-        chow w (S.take window xh) (S.take window x)
-        when (len > window) $ chow xh (S.drop window xh) (S.drop window x)
-      lastWindow .= (S.drop len w S.++ S.drop (len - window) xh)
+    w <- L.use lastWindow
+    w' <- hoist (L.zoom lastHash) $ do
+      if S.length w < window
+      then do
+              let n = window - S.length w
+              let w' = w S.++ S.take n x
+              let x' = S.drop n x
+              modify (\h -> S.foldl' hashCombine h (S.map hash (S.take n x)))
+              yield (Partial (S.take n x))
+              step w' x'
+      else step w x
+    lastWindow .= w'
   where
-    chow old new dat = assert (S.length old >= S.length new && S.length new == S.length dat) $
+    step w x | S.null x  = return w
+    step w x | otherwise =
       do
-        HashInner h input <- get
+        let len = S.length x
+        chow w (S.take window x)
+        when (len > window) $ chow x (S.drop window x)
+        return (S.drop len w S.++ S.drop (len - window) x)
+
+    chow old new = assert (S.length old >= S.length new) $
+      do
+        h <- get
         let (newH, boundaries) = rollingBoundaries old new h
-            start = max (window - input) 1
-            appliedBoundaries = S.dropWhile (< start) boundaries
+        -- traceShow (boundaries, old, new) $ return ()
         let sliceAction a b = do
-              yield (Complete (S.unsafeSlice a (b - a) dat))
+              yield (Complete (S.unsafeSlice a (b - a) new))
               return b
-        n <- S.foldM sliceAction 0 appliedBoundaries
-        when (n < S.length dat) $ yield (Partial (S.drop n dat))
-        put (HashInner newH $ input+S.length dat)
+        n <- S.foldM sliceAction 0 boundaries
+        when (n < S.length new) $ yield (Partial (S.drop n new))
+        put newH
 
 recombine :: Monad m => Int -> Int -> Producer Output m a -> Producer Data m a
 recombine nmin nmax = loop S.empty
