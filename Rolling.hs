@@ -9,7 +9,6 @@ import qualified Data.Vector.Storable.Mutable as SM
 import qualified Data.Vector.Storable.ByteString as S
 import Control.Monad.ST
 import qualified Data.ByteString as B
---import Data.Monoid
 import Pipes
 import Pipes.Lift
 import qualified Pipes.Prelude as P
@@ -24,10 +23,10 @@ import Criterion.Main
 --import Debug.Trace
 
 window :: Int
-window = 256
+window = 16 --256
 
 mask :: Word64
-mask = 0x1fff
+mask = 0xf --0x1fff
 
 testMask :: Word64 -> Bool
 testMask x = x .&. mask == mask
@@ -51,7 +50,7 @@ hashCombine x y = x `rotateL` 1 `xor` y
 type Data = S.Vector Word8
 
 roll :: S.Vector Word64 -> S.Vector Word64
-roll hashed = S.scanl hashCombine 0 $ S.zipWith (+>) (S.replicate window 0 S.++ hashed) hashed
+roll hashed = S.postscanl hashCombine 0 $ S.zipWith (+>) (S.replicate window 0 S.++ hashed) hashed
 
 prop_rolls :: QC.Property
 prop_rolls = QC.forAll inputVector $ \a ->
@@ -63,7 +62,7 @@ contiguous xs = zipWith (\a b -> S.slice a (b - a) xs) (0:boundaries) boundaries
   where hashed = S.map hash xs
         rolled = roll hashed
         markers = S.findIndices testMask rolled
-        boundaries = (++[S.length xs]) $ dropWhile (<window) $ S.toList markers
+        boundaries = (++[S.length xs]) $ dropWhile (<window) $ map (+1) $ S.toList markers
 
 cprop_allInputIsOutput :: QC.Property
 cprop_allInputIsOutput = QC.forAll inputVector $ \xs -> S.concat (contiguous xs) == xs
@@ -120,12 +119,13 @@ rollingBoundaries old new h0 = runST $ do mv <- SM.new (S.length new)
     runner mv = go h0 0 0
       where
         go !h !iOut !iIn | iIn < S.length new =
-                           do iOut' <- case testMask h of
-                                         True -> do SM.unsafeWrite mv iOut iIn
-                                                    return (iOut + 1)
-                                         False -> return iOut
+                           do
                               let hi = (old `S.unsafeIndex` iIn) +> (new `S.unsafeIndex` iIn)
                                   h' = hashCombine h hi
+                              iOut' <- case testMask h' of
+                                         True -> do SM.unsafeWrite mv iOut (iIn + 1)
+                                                    return (iOut + 1)
+                                         False -> return iOut
                               go h' iOut' (iIn + 1)
                          | otherwise = return (h, iOut)
 
