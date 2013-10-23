@@ -1,4 +1,4 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving, BangPatterns, NoMonomorphismRestriction, CPP #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving, BangPatterns, NoMonomorphismRestriction, ScopedTypeVariables, CPP #-}
 -- vim: sts=2:sw=2:ai:et
 --module Rolling where
 
@@ -125,7 +125,7 @@ rollingBoundaries !old !new !h0 = runST $ do mv <- SM.new (S.length new)
                               go h' iOut' (iIn + 1)
                          | otherwise = return (h, iOut)
 
-rollsplitP :: Monad m => Pipe Data Output (StateT HashState m) ()
+rollsplitP :: forall m. Monad m => Pipe Data Output (StateT HashState m) ()
 rollsplitP = await >>= initialPhase
   where
     initialPhase !x =
@@ -147,7 +147,7 @@ rollsplitP = await >>= initialPhase
         then await >>= initialPhase
         else warmedUpPhase xn
 
-    warmedUpPhase :: Monad m => Data -> Pipe Data Output (StateT HashState m) ()
+    warmedUpPhase :: Data -> Pipe Data Output (StateT HashState m) ()
     warmedUpPhase !x =
       do
         w <- L.use lastWindow
