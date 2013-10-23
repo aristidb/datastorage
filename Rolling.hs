@@ -151,18 +151,14 @@ rollsplitP = await >>= initialPhase
     warmedUpPhase !x =
       do
         w <- L.use lastWindow
-        w' <- hoist (L.zoom lastHash) $ step w x
+        w' <- hoist (L.zoom lastHash) $
+          do
+            let len = S.length x
+            chow w (S.take window x)
+            when (len > window) $ chow x (S.drop window x)
+            return (S.drop len w S.++ S.drop (len - window) x)
         lastWindow .= w'
         await >>= warmedUpPhase
-
-    step !w !x | S.null x  = return w
-    step !w !x | otherwise =
-      do
-        let len = S.length x
-        chow w (S.take window x)
-        when (len > window) $ chow x (S.drop window x)
-        return (S.drop len w S.++ S.drop (len - window) x)
-    {-# INLINE step #-}
 
     chow !old !new = assert (S.length old >= S.length new) $
       do
