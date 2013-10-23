@@ -1,4 +1,4 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving, BangPatterns, NoMonomorphismRestriction #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving, BangPatterns, NoMonomorphismRestriction, CPP #-}
 -- vim: sts=2:sw=2:ai:et
 --module Rolling where
 
@@ -23,10 +23,15 @@ import Criterion.Main
 import Debug.Trace
 
 window :: Int
-window = 16 --256
-
 mask :: Word64
-mask = 0xf --0x1fff
+
+#if 0
+window = 16
+mask = 0xf
+#else
+window = 256
+mask = 0x1fff
+#endif
 
 testMask :: Word64 -> Bool
 testMask x = x .&. mask == mask
@@ -102,10 +107,10 @@ isComplete (Partial _) = False
 isComplete (Complete _) = True
 
 rollingBoundaries :: Data -> Data -> Word64 -> (Word64, S.Vector Int)
-rollingBoundaries old new h0 = runST $ do mv <- SM.new (S.length new)
-                                          (h', len) <- runner mv
-                                          v <- S.unsafeFreeze (SM.take len mv)
-                                          return (h', v)
+rollingBoundaries !old !new !h0 = runST $ do mv <- SM.new (S.length new)
+                                             (h', len) <- runner mv
+                                             v <- S.unsafeFreeze (SM.take len mv)
+                                             return (h', v)
   where
     runner mv = go h0 0 0
       where
@@ -121,42 +126,55 @@ rollingBoundaries old new h0 = runST $ do mv <- SM.new (S.length new)
                          | otherwise = return (h, iOut)
 
 rollsplitP :: Monad m => Pipe Data Output (StateT HashState m) ()
-rollsplitP =
-  forever $
-  do
-    x <- await
-    w <- L.use lastWindow
-    w' <- hoist (L.zoom lastHash) $ do
-      if S.length w < window
-      then do
-              let n = window - S.length w
-              let w' = w S.++ S.take n x
-              let x' = S.drop n x
-              modify (\h -> S.foldl' hashCombine h (S.map hash (S.take n x)))
-              yield (Partial (S.take n x))
-              step w' x'
-      else step w x
-    lastWindow .= w'
+rollsplitP = await >>= initialPhase
   where
-    step w x | S.null x  = return w
-    step w x | otherwise =
+    initialPhase !x =
+      do
+        w <- L.use lastWindow
+        assert (S.length w < window) (return ())
+
+        let n = window - S.length w
+            (xi, xn) = S.splitAt n x
+            w' = w S.++ xi
+        lastWindow .= w'
+
+        h <- L.use lastHash
+        lastHash .= S.foldl' hashCombine h (S.map hash (S.take n x))
+
+        yield (Partial xi)
+
+        if S.length w' < window
+        then await >>= initialPhase
+        else warmedUpPhase xn
+
+    warmedUpPhase :: Monad m => Data -> Pipe Data Output (StateT HashState m) ()
+    warmedUpPhase !x =
+      do
+        w <- L.use lastWindow
+        w' <- hoist (L.zoom lastHash) $ step w x
+        lastWindow .= w'
+        await >>= warmedUpPhase
+
+    step !w !x | S.null x  = return w
+    step !w !x | otherwise =
       do
         let len = S.length x
         chow w (S.take window x)
         when (len > window) $ chow x (S.drop window x)
         return (S.drop len w S.++ S.drop (len - window) x)
+    {-# INLINE step #-}
 
-    chow old new = assert (S.length old >= S.length new) $
+    chow !old !new = assert (S.length old >= S.length new) $
       do
         h <- get
         let (newH, boundaries) = rollingBoundaries old new h
-        -- traceShow (boundaries, old, new) $ return ()
         let sliceAction a b = do
               yield (Complete (S.unsafeSlice a (b - a) new))
               return b
         n <- S.foldM sliceAction 0 boundaries
         when (n < S.length new) $ yield (Partial (S.drop n new))
         put newH
+    {-# INLINE chow #-}
 
 recombine :: Monad m => Int -> Int -> Producer Output m a -> Producer Data m a
 recombine nmin nmax = loop S.empty
