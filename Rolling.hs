@@ -126,7 +126,11 @@ rollingBoundaries !old !new !h0 = runST $ do mv <- SM.new (S.length new)
                          | otherwise = return (h, iOut)
 
 rollsplitP :: forall m. Monad m => Pipe Data Output (StateT HashState m) ()
-rollsplitP = await >>= initialPhase
+rollsplitP =
+    do w <- L.use lastWindow
+       if S.length w >= window
+        then await >>= warmedUpPhase
+        else await >>= initialPhase
   where
     initialPhase !x =
       do
@@ -151,6 +155,8 @@ rollsplitP = await >>= initialPhase
     warmedUpPhase !x =
       do
         w <- L.use lastWindow
+        assert (S.length w == window) (return ())
+
         w' <- hoist (L.zoom lastHash) $
           do
             let len = S.length x
