@@ -4,12 +4,11 @@
 
 import Data.Word
 import Data.Bits
-import qualified Data.Vector.Storable as S
-import qualified Data.Vector.Storable.ByteString as S
 import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Unboxed.Mutable as UM
 import Control.Monad.ST
 import qualified Data.ByteString as B
+import qualified Data.ByteString.Unsafe as B
 import Pipes
 import Pipes.Lift
 import qualified Pipes.Prelude as P
@@ -39,7 +38,7 @@ testMask x = x .&. mask == mask
 {-# INLINE testMask #-}
 
 hash :: Word8 -> Word64
-hash x = lut S.! fromIntegral x
+hash x = lut `U.unsafeIndex` fromIntegral x
 {-# INLINE hash #-}
 
 rhash :: Word8 -> Word8 -> Word64 -> Word64
@@ -53,34 +52,34 @@ hashCombine :: Word64 -> Word64 -> Word64
 hashCombine !x !y = x `rotateL` 1 `xor` y
 {-# INLINE hashCombine #-}
 
-type Data = S.Vector Word8
+type Data = B.ByteString -- S.Vector Word8
 
-roll :: S.Vector Word64 -> S.Vector Word64
-roll hashed = S.postscanl hashCombine h (S.zipWith (+>) hashed (S.drop window hashed))
-  where h = S.foldl' hashCombine 0 (S.take window hashed)
+roll :: [Word64] -> [Word64]
+roll hashed = tail $ scanl hashCombine h (zipWith (+>) hashed (drop window hashed))
+  where h = foldl' hashCombine 0 (take window hashed)
 
 prop_rolls :: QC.Property
-prop_rolls = QC.forAll inputVector $ \a ->
-             QC.forAll (QC.suchThat inputVector (\v -> S.length v >= window)) $ \b ->
-               S.last (roll b) == S.last (roll (a S.++ b))
+prop_rolls = QC.forAll inputList $ \a ->
+             QC.forAll (QC.suchThat inputList (\v -> length v > window)) $ \b ->
+               last (roll b) == last (roll (a ++ b))
 
 contiguous :: Data -> [Data]
-contiguous xs = zipWith (\a b -> S.slice a (b - a) xs) (0:boundaries) boundaries
-  where hashed = S.map hash xs
+contiguous xs = zipWith (\a b -> B.take (b - a) (B.drop a xs)) (0:boundaries) boundaries
+  where hashed = map hash (B.unpack xs)
         rolled = roll hashed
-        markers = S.findIndices testMask rolled
-        boundaries = (++[S.length xs]) $ map (+(window+1)) $ S.toList markers
+        markers = findIndices testMask rolled
+        boundaries = (++[B.length xs]) $ map (+(window+1)) markers
 
 cprop_allInputIsOutput :: QC.Property
-cprop_allInputIsOutput = QC.forAll inputVector $ \xs -> S.concat (contiguous xs) == xs
+cprop_allInputIsOutput = QC.forAll inputData $ \xs -> B.concat (contiguous xs) == xs
 
 cprop_prefix :: QC.Property
-cprop_prefix = QC.forAll inputVector $ \xs -> QC.forAll inputVector $ \ys ->
-  let a = contiguous (xs S.++ ys); b = contiguous xs in init' b `isPrefixOf` a
+cprop_prefix = QC.forAll inputData $ \xs -> QC.forAll inputData $ \ys ->
+  let a = contiguous (xs `B.append` ys); b = contiguous xs in init' b `isPrefixOf` a
 
 cprop_suffix :: QC.Property
-cprop_suffix = QC.forAll inputVector $ \xs -> QC.forAll inputVector $ \ys ->
-  let a = contiguous (xs S.++ ys); c = contiguous ys in tail' c `isSuffixOf` a
+cprop_suffix = QC.forAll inputData $ \xs -> QC.forAll inputData $ \ys ->
+  let a = contiguous (xs `B.append` ys); c = contiguous ys in tail' c `isSuffixOf` a
 
 cprop_valid :: QC.Property
 cprop_valid = cprop_allInputIsOutput QC..&. cprop_prefix QC..&. cprop_suffix
@@ -92,7 +91,7 @@ data HashState
     }
 
 initialState :: HashState
-initialState = HashState 0 S.empty
+initialState = HashState 0 B.empty
 
 lastHash :: L.Lens' HashState Word64
 lastHash f (HashState h w) = fmap (\h' -> HashState h' w) (f h)
@@ -108,16 +107,16 @@ isComplete (Partial _) = False
 isComplete (Complete _) = True
 
 rollingBoundaries :: Data -> Data -> Word64 -> (Word64, U.Vector Int)
-rollingBoundaries !old !new !h0 = runST $ do mv <- UM.new (S.length new)
+rollingBoundaries !old !new !h0 = runST $ do mv <- UM.new (B.length new)
                                              (h', len) <- runner mv
                                              v <- U.unsafeFreeze (UM.take len mv)
                                              return (h', v)
   where
     runner mv = go h0 0 0
       where
-        go !h !iOut !iIn | iIn < S.length new =
+        go !h !iOut !iIn | iIn < B.length new =
                            do
-                              let hi = hash (old `S.unsafeIndex` iIn) +> hash (new `S.unsafeIndex` iIn)
+                              let hi = hash (old `B.unsafeIndex` iIn) +> hash (new `B.unsafeIndex` iIn)
                                   h' = hashCombine h hi
                               iOut' <- case testMask h' of
                                          True -> do UM.unsafeWrite mv iOut (iIn + 1)
@@ -129,26 +128,26 @@ rollingBoundaries !old !new !h0 = runST $ do mv <- UM.new (S.length new)
 rollsplitP :: forall m. Monad m => Pipe Data Output (StateT HashState m) ()
 rollsplitP =
     do w <- L.use lastWindow
-       if S.length w >= window
+       if B.length w >= window
         then await >>= warmedUpPhase
         else await >>= initialPhase
   where
     initialPhase !x =
       do
         w <- L.use lastWindow
-        assert (S.length w < window) (return ())
+        assert (B.length w < window) (return ())
 
-        let n = window - S.length w
-            (xi, xn) = S.splitAt n x
-            w' = w S.++ xi
+        let n = window - B.length w
+            (xi, xn) = B.splitAt n x
+            w' = w `B.append` xi
         lastWindow .= w'
 
         h <- L.use lastHash
-        lastHash .= S.foldl' hashCombine h (S.map hash (S.take n x))
+        lastHash .= foldl' hashCombine h (map hash (B.unpack $ B.take n x))
 
         yield (Partial xi)
 
-        if S.length w' < window
+        if B.length w' < window
         then await >>= initialPhase
         else warmedUpPhase xn
 
@@ -156,62 +155,64 @@ rollsplitP =
     warmedUpPhase !x =
       do
         w <- L.use lastWindow
-        assert (S.length w == window) (return ())
+        assert (B.length w == window) (return ())
 
         w' <- hoist (L.zoom lastHash) $
           do
-            let len = S.length x
-            chow w (S.take window x)
-            when (len > window) $ chow x (S.drop window x)
-            return (S.drop len w S.++ S.drop (len - window) x)
+            let len = B.length x
+            chow w (B.take window x)
+            when (len > window) $ chow x (B.drop window x)
+            return (B.drop len w `B.append` B.drop (len - window) x)
         lastWindow .= w'
         await >>= warmedUpPhase
 
-    chow !old !new = assert (S.length old >= S.length new) $
+    chow !old !new = assert (B.length old >= B.length new) $
       do
         h <- get
         let (newH, boundaries) = rollingBoundaries old new h
         let sliceAction a b = do
-              yield (Complete (S.unsafeSlice a (b - a) new))
+              yield (Complete (B.unsafeTake (b - a) (B.unsafeDrop a new)))
               return b
         n <- U.foldM sliceAction 0 boundaries
-        when (n < S.length new) $ yield (Partial (S.drop n new))
+        when (n < B.length new) $ yield (Partial (B.drop n new))
         put newH
     {-# INLINE chow #-}
 
 recombine :: Monad m => Int -> Int -> Producer Output m a -> Producer Data m a
-recombine nmin nmax = loop S.empty
+recombine nmin nmax = loop B.empty
   where
     loop d p =
-      case S.length d of
+      case B.length d of
         n | n < nmax ->
             do e <- lift (next p)
                case e of
                  Left v -> yield d >> return v
-                 Right (output, p') -> if isComplete output && S.length d' >= nmin
-                                       then yield d' >> loop S.empty p'
+                 Right (output, p') -> if isComplete output && B.length d' >= nmin
+                                       then yield d' >> loop B.empty p'
                                        else loop d' p'
-                   where d' = d S.++ getOutput output
+                   where d' = d `B.append` getOutput output
           | otherwise ->
-            do yield (S.take nmax d)
-               loop (S.drop nmax d) p
+            do yield (B.take nmax d)
+               loop (B.drop nmax d) p
 
 rollsplit :: Monad m => Int -> Int -> Producer Data m () -> Producer Data m ()
 rollsplit nmin nmax p = recombine nmin nmax $ evalStateP initialState $ hoist lift p >-> rollsplitP
 
 rollsplitL :: [Data] -> [Data]
-rollsplitL = filter (not.S.null) . rollsplitL'
+rollsplitL = filter (not.B.null) . rollsplitL'
 
 rollsplitL' :: [Data] -> [Data]
 rollsplitL' xs = P.toList $ rollsplit 0 (maxBound :: Int) (each xs)
 
-inputVector :: (QC.Arbitrary a, S.Storable a) => QC.Gen (S.Vector a)
-inputVector = QC.sized $ \n -> do
+inputList :: QC.Arbitrary a => QC.Gen [a]
+inputList = QC.sized $ \n -> do
   k <- QC.choose (0,n)
   a <- QC.choose (0,window)
   let len = max 0 $ (k-1)*window+a
-  fmap S.fromList $ QC.vector len
+  QC.vector len
 
+inputData :: QC.Gen Data
+inputData = fmap B.pack inputList
 
 init' :: [a] -> [a]
 init' xs = take (length xs - 1) xs
@@ -220,25 +221,25 @@ tail' :: [a] -> [a]
 tail' xs = drop 1 xs
 
 prop_allInputIsOutput :: QC.Property
-prop_allInputIsOutput = QC.forAll (QC.listOf inputVector) $ \xs -> S.concat (rollsplitL xs) == S.concat xs
+prop_allInputIsOutput = QC.forAll (QC.listOf inputData) $ \xs -> B.concat (rollsplitL xs) == B.concat xs
 
 
 prop_inputSplit :: QC.Property
-prop_inputSplit = QC.forAll (QC.listOf inputVector) $ \xs -> rollsplitL xs == rollsplitL [S.concat xs]
+prop_inputSplit = QC.forAll (QC.listOf inputData) $ \xs -> rollsplitL xs == rollsplitL [B.concat xs]
 
 prop_prefix :: QC.Property
-prop_prefix = QC.forAll inputVector $ \xs -> QC.forAll inputVector $ \ys ->
+prop_prefix = QC.forAll inputData $ \xs -> QC.forAll inputData $ \ys ->
   let a = rollsplitL [xs, ys]; b = rollsplitL [xs] in init' b `isPrefixOf` a
 
 prop_suffix :: QC.Property
-prop_suffix = QC.forAll inputVector $ \xs -> QC.forAll inputVector $ \ys ->
+prop_suffix = QC.forAll inputData $ \xs -> QC.forAll inputData $ \ys ->
   let a = rollsplitL [xs, ys]; c = rollsplitL [ys] in tail' c `isSuffixOf` a
 
 prop_concat :: QC.Property
 prop_concat = prop_prefix QC..&. prop_suffix
 
 prop_eq :: QC.Property
-prop_eq = QC.forAll inputVector $ \xs -> rollsplitL' [xs] == contiguous xs
+prop_eq = QC.forAll inputData $ \xs -> rollsplitL' [xs] == contiguous xs
 
 prop_valid :: QC.Property
 prop_valid = prop_allInputIsOutput QC..&. prop_inputSplit QC..&. prop_concat QC..&. prop_eq
@@ -252,8 +253,8 @@ test nmin nmax xs = runEffect $ for (rollsplit nmin nmax (each xs)) (lift . prin
 test2 :: [Data] -> IO ()
 test2 xs = runEffect $ for (evalStateP initialState $ each xs >-> rollsplitP) (lift . print)
 
-lut :: S.Vector Word64
-lut = S.fromList [
+lut :: U.Vector Word64
+lut = U.fromList [
     0xfead5b707dc7705c, 0x377c1e06dc1e45cf, 0x0184179586d5ae76, 0xd23aa044f8193aa6,
     0xbd8ef5fcde7bd95e, 0x29a822b00a75ea90, 0x5ba03c1b2fdc2f86, 0x4f67d80bad410270,
     0xfcc4b6b0cb67bb75, 0x8f4359ea8777f5d0, 0x5a110ec6371430f5, 0xe15dae4e9709aa66,
@@ -327,10 +328,10 @@ stats = gg
 
 main :: IO ()
 main = do
-  benchRawData <- fmap S.byteStringToVector (B.readFile "bench.dat")
-  let benchData bs = force $ map (\p -> S.slice p bs benchRawData) [0,bs..S.length benchRawData-1]
-  print $ map S.length (rollsplitL' $ benchData 4096)
-  print $ map S.length (rollsplitL' $ benchData 65536)
+  benchRawData <- B.readFile "bench.dat"
+  let benchData bs = force $ map (\p -> B.take bs (B.drop p benchRawData)) [0,bs..B.length benchRawData-1]
+  print $ map B.length (rollsplitL' $ benchData 4096)
+  print $ map B.length (rollsplitL' $ benchData 65536)
   defaultMain [
     let dat = benchData 4096 in dat `seq` bench "simple 4096" $ nf rollsplitL' dat,
     let dat = benchData 65536 in dat `seq` bench "simple 65536" $ nf rollsplitL' dat,
