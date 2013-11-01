@@ -5,8 +5,9 @@
 import Data.Word
 import Data.Bits
 import qualified Data.Vector.Storable as S
-import qualified Data.Vector.Storable.Mutable as SM
 import qualified Data.Vector.Storable.ByteString as S
+import qualified Data.Vector.Unboxed as U
+import qualified Data.Vector.Unboxed.Mutable as UM
 import Control.Monad.ST
 import qualified Data.ByteString as B
 import Pipes
@@ -20,7 +21,7 @@ import qualified Control.Lens as L
 import Control.Lens.Operators
 import Control.DeepSeq
 import Criterion.Main
-import Debug.Trace
+-- import Debug.Trace
 
 window :: Int
 mask :: Word64
@@ -106,10 +107,10 @@ isComplete :: Output -> Bool
 isComplete (Partial _) = False
 isComplete (Complete _) = True
 
-rollingBoundaries :: Data -> Data -> Word64 -> (Word64, S.Vector Int)
-rollingBoundaries !old !new !h0 = runST $ do mv <- SM.new (S.length new)
+rollingBoundaries :: Data -> Data -> Word64 -> (Word64, U.Vector Int)
+rollingBoundaries !old !new !h0 = runST $ do mv <- UM.new (S.length new)
                                              (h', len) <- runner mv
-                                             v <- S.unsafeFreeze (SM.take len mv)
+                                             v <- U.unsafeFreeze (UM.take len mv)
                                              return (h', v)
   where
     runner mv = go h0 0 0
@@ -119,7 +120,7 @@ rollingBoundaries !old !new !h0 = runST $ do mv <- SM.new (S.length new)
                               let hi = hash (old `S.unsafeIndex` iIn) +> hash (new `S.unsafeIndex` iIn)
                                   h' = hashCombine h hi
                               iOut' <- case testMask h' of
-                                         True -> do SM.unsafeWrite mv iOut (iIn + 1)
+                                         True -> do UM.unsafeWrite mv iOut (iIn + 1)
                                                     return (iOut + 1)
                                          False -> return iOut
                               go h' iOut' (iIn + 1)
@@ -173,7 +174,7 @@ rollsplitP =
         let sliceAction a b = do
               yield (Complete (S.unsafeSlice a (b - a) new))
               return b
-        n <- S.foldM sliceAction 0 boundaries
+        n <- U.foldM sliceAction 0 boundaries
         when (n < S.length new) $ yield (Partial (S.drop n new))
         put newH
     {-# INLINE chow #-}
