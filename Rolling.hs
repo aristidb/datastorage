@@ -20,6 +20,7 @@ import qualified Control.Lens as L
 import Control.Lens.Operators
 import Control.DeepSeq
 import Criterion.Main
+import Statistics.Sample.Histogram
 -- import Debug.Trace
 
 window :: Int
@@ -30,7 +31,7 @@ window = 16
 mask = 0xf
 #else
 window = 256
-mask = 0x1fff
+mask = 0x3fff
 #endif
 
 testMask :: Word64 -> Bool
@@ -38,7 +39,15 @@ testMask x = x .&. mask == mask
 {-# INLINE testMask #-}
 
 hash :: Word8 -> Word64
-hash x = lut `U.unsafeIndex` fromIntegral x
+{-
+hash x = v8
+  where v = fromIntegral x
+        vv = v `shiftL` 8 .|. v
+        vvvv = vv `shiftL` 16 .|. vv
+        v8 = vvvv `shiftL` 32 .|. vvvv
+        -}
+hash x = 31 * fromIntegral x
+-- hash x = lut `U.unsafeIndex` fromIntegral x
 {-# INLINE hash #-}
 
 rhash :: Word8 -> Word8 -> Word64 -> Word64
@@ -321,17 +330,17 @@ lut = U.fromList [
     0xaac56091fcec9c38, 0x0b34953b386ed0c4, 0xde46839785d1b945, 0x623a65d725974df2
   ]
 
-{-
 stats :: [Int] -> IO ()
-stats = gg
--}
+stats xs = print (minimum xs) >> print (maximum xs) >> print (fromIntegral (sum xs) / fromIntegral (length xs)) >> print hist
+  where
+    hist = histogram_ 12 0 32 (U.map (logBase 2 . fromIntegral) $ U.fromList xs :: U.Vector Double) :: U.Vector Int
 
 main :: IO ()
 main = do
   benchRawData <- B.readFile "bench.dat"
   let benchData bs = force $ map (\p -> B.take bs (B.drop p benchRawData)) [0,bs..B.length benchRawData-1]
-  print $ map B.length (rollsplitL' $ benchData 4096)
-  print $ map B.length (rollsplitL' $ benchData 65536)
+  stats $ map B.length (rollsplitL' $ benchData 4096)
+  stats $ map B.length (rollsplitL' $ benchData 65536)
   defaultMain [
     let dat = benchData 4096 in dat `seq` bench "simple 4096" $ nf rollsplitL' dat,
     let dat = benchData 65536 in dat `seq` bench "simple 65536" $ nf rollsplitL' dat,
