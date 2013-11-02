@@ -3,12 +3,14 @@
 --module Rolling where
 
 import Data.Word
+import Data.Int
 import Data.Bits
 import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Unboxed.Mutable as UM
 import Control.Monad.ST
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Unsafe as B
+import qualified Data.ByteString.Lazy as L
 import Pipes
 import Pipes.Lift
 import qualified Pipes.Prelude as P
@@ -187,31 +189,31 @@ rollsplitP =
         put newH
     {-# INLINE chow #-}
 
-recombine :: Monad m => Int -> Int -> Producer Output m a -> Producer Data m a
-recombine nmin nmax = loop B.empty
+recombine :: Monad m => Int64 -> Int64 -> Producer Output m a -> Producer L.ByteString m a
+recombine nmin nmax = loop L.empty
   where
     loop d p =
-      case B.length d of
+      case L.length d of
         n | n < nmax ->
             do e <- lift (next p)
                case e of
                  Left v -> yield d >> return v
-                 Right (output, p') -> if isComplete output && B.length d' >= nmin
-                                       then yield d' >> loop B.empty p'
+                 Right (output, p') -> if isComplete output && L.length d' >= nmin
+                                       then yield d' >> loop L.empty p'
                                        else loop d' p'
-                   where d' = d `B.append` getOutput output
+                   where d' = d `L.append` L.fromStrict (getOutput output)
           | otherwise ->
-            do yield (B.take nmax d)
-               loop (B.drop nmax d) p
+            do yield (L.take nmax d)
+               loop (L.drop nmax d) p
 
-rollsplit :: Monad m => Int -> Int -> Producer Data m () -> Producer Data m ()
+rollsplit :: Monad m => Int64 -> Int64 -> Producer Data m () -> Producer L.ByteString m ()
 rollsplit nmin nmax p = recombine nmin nmax $ evalStateP initialState $ hoist lift p >-> rollsplitP
 
-rollsplitL :: [Data] -> [Data]
-rollsplitL = filter (not.B.null) . rollsplitL'
+rollsplitL :: [Data] -> [L.ByteString]
+rollsplitL = filter (not . L.null) . rollsplitL'
 
-rollsplitL' :: [Data] -> [Data]
-rollsplitL' xs = P.toList $ rollsplit 0 (maxBound :: Int) (each xs)
+rollsplitL' :: [Data] -> [L.ByteString]
+rollsplitL' xs = P.toList $ rollsplit 0 (maxBound :: Int64) (each xs)
 
 inputList :: QC.Arbitrary a => QC.Gen [a]
 inputList = QC.sized $ \n -> do
@@ -230,7 +232,7 @@ tail' :: [a] -> [a]
 tail' xs = drop 1 xs
 
 prop_allInputIsOutput :: QC.Property
-prop_allInputIsOutput = QC.forAll (QC.listOf inputData) $ \xs -> B.concat (rollsplitL xs) == B.concat xs
+prop_allInputIsOutput = QC.forAll (QC.listOf inputData) $ \xs -> L.concat (rollsplitL xs) == L.fromChunks xs
 
 
 prop_inputSplit :: QC.Property
@@ -248,7 +250,7 @@ prop_concat :: QC.Property
 prop_concat = prop_prefix QC..&. prop_suffix
 
 prop_eq :: QC.Property
-prop_eq = QC.forAll inputData $ \xs -> rollsplitL' [xs] == contiguous xs
+prop_eq = QC.forAll inputData $ \xs -> rollsplitL' [xs] == map L.fromStrict (contiguous xs)
 
 prop_valid :: QC.Property
 prop_valid = prop_allInputIsOutput QC..&. prop_inputSplit QC..&. prop_concat QC..&. prop_eq
@@ -256,7 +258,7 @@ prop_valid = prop_allInputIsOutput QC..&. prop_inputSplit QC..&. prop_concat QC.
 qc :: IO ()
 qc = QC.quickCheckWith (QC.stdArgs { QC.maxSuccess = 700 }) (cprop_valid QC..&. prop_valid)
 
-test :: Int -> Int -> [Data] -> IO ()
+test :: Int64 -> Int64 -> [Data] -> IO ()
 test nmin nmax xs = runEffect $ for (rollsplit nmin nmax (each xs)) (lift . print)
 
 test2 :: [Data] -> IO ()
@@ -330,8 +332,8 @@ lut = U.fromList [
     0xaac56091fcec9c38, 0x0b34953b386ed0c4, 0xde46839785d1b945, 0x623a65d725974df2
   ]
 
-stats :: [Int] -> IO ()
-stats xs = print (minimum xs) >> print (maximum xs) >> print (fromIntegral (sum xs) / fromIntegral (length xs)) >> print hist
+stats :: [Int64] -> IO ()
+stats xs = print (minimum xs) >> print (maximum xs) >> print (fromIntegral (sum xs) / fromIntegral (length xs) :: Double) >> print hist
   where
     hist = histogram_ 12 0 32 (U.map (logBase 2 . fromIntegral) $ U.fromList xs :: U.Vector Double) :: U.Vector Int
 
@@ -339,8 +341,8 @@ main :: IO ()
 main = do
   benchRawData <- B.readFile "bench.dat"
   let benchData bs = force $ map (\p -> B.take bs (B.drop p benchRawData)) [0,bs..B.length benchRawData-1]
-  stats $ map B.length (rollsplitL' $ benchData 4096)
-  stats $ map B.length (rollsplitL' $ benchData 65536)
+  stats $ map L.length (rollsplitL' $ benchData 4096)
+  stats $ map L.length (rollsplitL' $ benchData 65536)
   defaultMain [
     let dat = benchData 4096 in dat `seq` bench "simple 4096" $ nf rollsplitL' dat,
     let dat = benchData 65536 in dat `seq` bench "simple 65536" $ nf rollsplitL' dat,
