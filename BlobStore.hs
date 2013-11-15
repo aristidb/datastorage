@@ -9,24 +9,24 @@ data Object = Object Address B.ByteString
 makeObject :: B.ByteString -> Object
 makeObject = undefined
 
-data Store e f = Store
+data Store f = Store
     { cache :: Object -> f ()
     , store :: Object -> f ()
-    , load :: Address -> f (Either e Object)
+    , load :: Address -> f (Maybe Object)
     }
 
-orM :: Monad f => f (Either e a) -> f (Either e a) -> f (Either e a)
+orM :: Monad f => f (Maybe a) -> f (Maybe a) -> f (Maybe a)
 orM m n = do x <- m
              case x of
-               Right _ -> return x
-               Left _ -> n
+               Just _ -> return x
+               Nothing -> n
 
-duplicated :: Monad f => (f () -> f () -> f ()) -> Store e f -> Store e f -> Store e f
+duplicated :: Monad f => (f () -> f () -> f ()) -> Store f -> Store f -> Store f
 duplicated (<>) a b = Store { cache = \o -> cache a o <> cache b o
                             , store = \o -> store a o <> store b o
                             , load = \i -> load a i `orM` load b i }
 
-multi :: Monad f => (Address -> f (Store e f)) -> Store e f
+multi :: Monad f => (Address -> f (Store f)) -> Store f
 multi locate = Store { cache = xcache, store = xstore, load = xload }
     where xcache o@(Object a _) = locate a >>= (`cache` o)
           xstore o@(Object a _) = locate a >>= (`store` o)
