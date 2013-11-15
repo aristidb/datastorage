@@ -48,8 +48,8 @@ hash x = v8
         vvvv = vv `shiftL` 16 .|. vv
         v8 = vvvv `shiftL` 32 .|. vvvv
         -}
-hash x = 31 * fromIntegral x
--- hash x = lut `U.unsafeIndex` fromIntegral x
+-- hash x = 31 * fromIntegral x
+hash x = lut `U.unsafeIndex` fromIntegral x
 {-# INLINE hash #-}
 
 rhash :: Word8 -> Word8 -> Word64 -> Word64
