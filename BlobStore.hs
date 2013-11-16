@@ -1,11 +1,11 @@
-{-# LANGUAGE ConstraintKinds, KindSignatures, DataKinds, DeriveFunctor #-}
+{-# LANGUAGE ConstraintKinds, KindSignatures, DataKinds #-}
 
+import qualified Data.ByteString.Lazy as L
 import Crypto.Hash
 import qualified Data.HashMap.Strict as HM
 import Data.IORef
 import Data.Hashable
 import Data.Byteable
-import Data.Binary
 
 data Address = SHA512Key (Digest SHA512)
     deriving (Eq, Show)
@@ -13,21 +13,21 @@ data Address = SHA512Key (Digest SHA512)
 instance Hashable Address where
     hashWithSalt salt (SHA512Key k) = hashWithSalt salt (toBytes k)
 
-data Object a = Object Address a
-    deriving (Functor, Show)
+data Object = Object Address L.ByteString
+    deriving (Show)
 
-address :: Object a -> Address
+address :: Object -> Address
 address (Object a _) = a
 
-makeObject :: Binary a => a -> Object a
-makeObject obj = Object (SHA512Key key) obj
-    where key = hashlazy (encode obj)
+makeObject :: L.ByteString -> Object
+makeObject blob = Object (SHA512Key key) blob
+    where key = hashlazy blob
 
 data Permanence = Cached | Stored
 
-data Store (p :: Permanence) f a = Store
-    { store :: Object a -> f ()
-    , load :: Address -> f (Maybe (Object a))
+data Store (p :: Permanence) f = Store
+    { store :: Object -> f ()
+    , load :: Address -> f (Maybe Object)
     }
 
 -- possible implementation of <|>
@@ -39,26 +39,26 @@ orM m n = do x <- m
 
 type Rel a = a -> a -> a
 
-duplicated :: Monad f => Rel (f ()) -> Rel (f (Maybe (Object a))) ->
-                         Store p1 f a -> Store p2 f a -> Store p3 f a
+duplicated :: Monad f => Rel (f ()) -> Rel (f (Maybe Object)) ->
+                         Store p1 f -> Store p2 f -> Store p3 f
 duplicated (<&>) (<|>) a b = Store { store = \o -> store a o <&> store b o
                                    , load = \i -> load a i <|> load b i }
 
-duplicatedSerial :: Monad f => Store p1 f a -> Store p2 f a -> Store p2 f a
+duplicatedSerial :: Monad f => Store p1 f -> Store p2 f -> Store p2 f
 duplicatedSerial = duplicated (>>) orM
 
-cache :: Monad f => Store Cached f a -> Store p f a -> Store p f a
+cache :: Monad f => Store Cached f -> Store p f -> Store p f
 cache = duplicatedSerial
 
-multi :: Monad f => (Address -> f (Store p f a)) -> Store p f a
+multi :: Monad f => (Address -> f (Store p f)) -> Store p f
 multi locate = Store { store = xstore, load = xload }
     where xstore o@(Object a _) = locate a >>= (`store` o)
           xload a = locate a >>= (`load` a)
 
-memoryStore :: IORef (HM.HashMap Address a) -> Store Stored IO a
+memoryStore :: IORef (HM.HashMap Address L.ByteString) -> Store Stored IO
 memoryStore mapRef = Store { store = xstore, load = xload }
     where xstore (Object a o) = atomicModifyIORef' mapRef (\m -> (HM.insert a o m, ()))
           xload a = (fmap (Object a) . HM.lookup a) `fmap` readIORef mapRef
 
-newMemoryStore :: IO (Store Stored IO a)
+newMemoryStore :: IO (Store Stored IO)
 newMemoryStore = memoryStore `fmap` newIORef HM.empty
