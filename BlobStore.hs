@@ -1,4 +1,4 @@
-{-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE ConstraintKinds, KindSignatures, DataKinds #-}
 
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
@@ -14,9 +14,10 @@ makeObject :: L.ByteString -> Object
 makeObject blob = Object (SHA512Key key) blob
     where key = SHA512.hashlazy blob
 
-data Store f = Store
-    { cache :: Object -> f ()
-    , store :: Object -> f ()
+data Permanence = Cached | Stored
+
+data Store (p :: Permanence) f = Store
+    { store :: Object -> f ()
     , load :: Address -> f (Maybe Object)
     }
 
@@ -30,16 +31,17 @@ orM m n = do x <- m
 type Rel a = a -> a -> a
 
 duplicated :: Monad f => Rel (f ()) -> Rel (f (Maybe Object)) ->
-                         Store f -> Store f -> Store f
-duplicated (<&>) (<|>) a b = Store { cache = \o -> cache a o <&> cache b o
-                            , store = \o -> store a o <&> store b o
-                            , load = \i -> load a i <|> load b i }
+                         Store p1 f -> Store p2 f -> Store p3 f
+duplicated (<&>) (<|>) a b = Store { store = \o -> store a o <&> store b o
+                                   , load = \i -> load a i <|> load b i }
 
-duplicatedSerial :: Monad f => Store f -> Store f -> Store f
+duplicatedSerial :: Monad f => Store p1 f -> Store p2 f -> Store p2 f
 duplicatedSerial = duplicated (>>) orM
 
-multi :: Monad f => (Address -> f (Store f)) -> Store f
-multi locate = Store { cache = xcache, store = xstore, load = xload }
-    where xcache o@(Object a _) = locate a >>= (`cache` o)
-          xstore o@(Object a _) = locate a >>= (`store` o)
+cache :: Monad f => Store Cached f -> Store p f -> Store p f
+cache = duplicatedSerial
+
+multi :: Monad f => (Address -> f (Store p f)) -> Store p f
+multi locate = Store { store = xstore, load = xload }
+    where xstore o@(Object a _) = locate a >>= (`store` o)
           xload a = locate a >>= (`load` a)
