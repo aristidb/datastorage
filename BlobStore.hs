@@ -1,13 +1,18 @@
 {-# LANGUAGE ConstraintKinds #-}
 
 import qualified Data.ByteString as B
+import qualified Data.ByteString.Lazy as L
+import qualified Crypto.Hash.SHA512 as SHA512
 
 data Address = SHA512Key B.ByteString
+    deriving (Show)
 
-data Object = Object Address B.ByteString
+data Object = Object Address L.ByteString
+    deriving (Show)
 
-makeObject :: B.ByteString -> Object
-makeObject = undefined
+makeObject :: L.ByteString -> Object
+makeObject blob = Object (SHA512Key key) blob
+    where key = SHA512.hashlazy blob
 
 data Store f = Store
     { cache :: Object -> f ()
