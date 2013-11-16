@@ -1,10 +1,9 @@
 {-# LANGUAGE ConstraintKinds, KindSignatures, DataKinds #-}
 
-import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
-import qualified Crypto.Hash.SHA512 as SHA512
+import Crypto.Hash
 
-data Address = SHA512Key B.ByteString
+data Address = SHA512Key (Digest SHA512)
     deriving (Show)
 
 data Object = Object Address L.ByteString
@@ -12,7 +11,7 @@ data Object = Object Address L.ByteString
 
 makeObject :: L.ByteString -> Object
 makeObject blob = Object (SHA512Key key) blob
-    where key = SHA512.hashlazy blob
+    where key = hashlazy blob
 
 data Permanence = Cached | Stored
 
