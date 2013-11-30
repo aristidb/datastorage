@@ -1,4 +1,4 @@
-{-# LANGUAGE ConstraintKinds, KindSignatures, DataKinds #-}
+{-# LANGUAGE ConstraintKinds, KindSignatures, DataKinds, ScopedTypeVariables #-}
 
 import qualified Data.ByteString.Lazy as L
 import Crypto.Hash
@@ -7,6 +7,9 @@ import Data.IORef
 import Data.Hashable
 import Data.Byteable
 import qualified Data.Cache.LRU as LRU
+import Control.Exception
+import Control.DeepSeq (force)
+import Control.Applicative ((<$>))
 
 data Address = SHA512Key (Digest SHA512)
     deriving (Eq, Ord, Show)
@@ -59,15 +62,25 @@ multi locate = Store { store = xstore, load = xload }
 memoryStore :: IORef (HM.HashMap Address L.ByteString) -> Store Stored IO
 memoryStore mapRef = Store { store = xstore, load = xload }
     where xstore (Object a o) = atomicModifyIORef' mapRef (\m -> (HM.insert a o m, ()))
-          xload a = (fmap (Object a) . HM.lookup a) `fmap` readIORef mapRef
+          xload a = fmap (Object a) . HM.lookup a <$> readIORef mapRef
 
 newMemoryStore :: IO (Store Stored IO)
-newMemoryStore = memoryStore `fmap` newIORef HM.empty
+newMemoryStore = memoryStore <$> newIORef HM.empty
 
 lruCache :: IORef (LRU.LRU Address L.ByteString) -> Store Cached IO
 lruCache cacheRef = Store { store = xstore, load = xload }
     where xstore (Object a o) = atomicModifyIORef' cacheRef (\m -> (LRU.insert a o m, ()))
-          xload a = fmap (Object a) `fmap` atomicModifyIORef' cacheRef (LRU.lookup a)
+          xload a = fmap (Object a) <$> atomicModifyIORef' cacheRef (LRU.lookup a)
 
 newLRUCache :: Maybe Integer -> IO (Store Cached IO)
-newLRUCache len = lruCache `fmap` newIORef (LRU.newLRU len)
+newLRUCache len = lruCache <$> newIORef (LRU.newLRU len)
+
+fsStore :: FilePath -> Store Stored IO
+fsStore dir = Store { store = xstore, load = xload }
+    where
+        addrPath (SHA512Key k) = dir ++ "/O_" ++ show k
+        xstore (Object a o) = L.writeFile (addrPath a) o
+        xload a = do m <- try $ force <$> L.readFile (addrPath a)
+                     return $ case m of
+                       Left (_ :: IOException) -> Nothing
+                       Right x -> Just (Object a x)
