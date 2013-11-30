@@ -9,7 +9,7 @@ import Data.Byteable
 import qualified Data.Cache.LRU as LRU
 import Control.Exception
 import Control.DeepSeq (force)
-import Control.Applicative ((<$>))
+import Control.Applicative ((<$>), (<$))
 
 data Address = SHA512Key (Digest SHA512)
     deriving (Eq, Ord, Show)
@@ -27,13 +27,15 @@ makeObject :: L.ByteString -> Object
 makeObject blob = Object (SHA512Key key) blob
     where key = hashlazy blob
 
-data Permanence = Cached | Stored
+data StorageLevel a = Unknown | Cached { storedObject :: a } | Stored { storedObject :: a }
+    deriving (Show)
 
-data Store (p :: Permanence) f = Store
-    { store :: Object -> f ()
-    , load :: Address -> f (Maybe Object)
+data Store f = Store
+    { store :: Object -> f (StorageLevel ())
+    , load :: Address -> f (StorageLevel Object)
     }
 
+{-
 -- possible implementation of <|>
 orM :: Monad f => f (Maybe a) -> f (Maybe a) -> f (Maybe a)
 orM m n = do x <- m
@@ -58,29 +60,30 @@ multi :: Monad f => (Address -> f (Store p f)) -> Store p f
 multi locate = Store { store = xstore, load = xload }
     where xstore o@(Object a _) = locate a >>= (`store` o)
           xload a = locate a >>= (`load` a)
+-}
 
-memoryStore :: IORef (HM.HashMap Address L.ByteString) -> Store Stored IO
+memoryStore :: IORef (HM.HashMap Address L.ByteString) -> Store IO
 memoryStore mapRef = Store { store = xstore, load = xload }
-    where xstore (Object a o) = atomicModifyIORef' mapRef (\m -> (HM.insert a o m, ()))
-          xload a = fmap (Object a) . HM.lookup a <$> readIORef mapRef
+    where xstore (Object a o) = atomicModifyIORef' mapRef (\m -> (HM.insert a o m, Stored ()))
+          xload a = maybe Unknown (Stored . Object a) . HM.lookup a <$> readIORef mapRef
 
-newMemoryStore :: IO (Store Stored IO)
+newMemoryStore :: IO (Store IO)
 newMemoryStore = memoryStore <$> newIORef HM.empty
 
-lruCache :: IORef (LRU.LRU Address L.ByteString) -> Store Cached IO
+lruCache :: IORef (LRU.LRU Address L.ByteString) -> Store IO
 lruCache cacheRef = Store { store = xstore, load = xload }
-    where xstore (Object a o) = atomicModifyIORef' cacheRef (\m -> (LRU.insert a o m, ()))
-          xload a = fmap (Object a) <$> atomicModifyIORef' cacheRef (LRU.lookup a)
+    where xstore (Object a o) = atomicModifyIORef' cacheRef (\m -> (LRU.insert a o m, Cached ()))
+          xload a = maybe Unknown (Cached . Object a) <$> atomicModifyIORef' cacheRef (LRU.lookup a)
 
-newLRUCache :: Maybe Integer -> IO (Store Cached IO)
+newLRUCache :: Maybe Integer -> IO (Store IO)
 newLRUCache len = lruCache <$> newIORef (LRU.newLRU len)
 
-fsStore :: FilePath -> Store Stored IO
+fsStore :: FilePath -> Store IO
 fsStore dir = Store { store = xstore, load = xload }
     where
         addrPath (SHA512Key k) = dir ++ "/O_" ++ show k
-        xstore (Object a o) = L.writeFile (addrPath a) o
+        xstore (Object a o) = Stored () <$ L.writeFile (addrPath a) o
         xload a = do m <- try $ force <$> L.readFile (addrPath a)
                      return $ case m of
-                       Left (_ :: IOException) -> Nothing
-                       Right x -> Just (Object a x)
+                       Left (_ :: IOException) -> Unknown
+                       Right x -> Stored (Object a x)
