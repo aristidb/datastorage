@@ -6,9 +6,10 @@ import qualified Data.HashMap.Strict as HM
 import Data.IORef
 import Data.Hashable
 import Data.Byteable
+import qualified Data.Cache.LRU as LRU
 
 data Address = SHA512Key (Digest SHA512)
-    deriving (Eq, Show)
+    deriving (Eq, Ord, Show)
 
 instance Hashable Address where
     hashWithSalt salt (SHA512Key k) = hashWithSalt salt (toBytes k)
@@ -62,3 +63,11 @@ memoryStore mapRef = Store { store = xstore, load = xload }
 
 newMemoryStore :: IO (Store Stored IO)
 newMemoryStore = memoryStore `fmap` newIORef HM.empty
+
+lruCache :: IORef (LRU.LRU Address L.ByteString) -> Store Cached IO
+lruCache cacheRef = Store { store = xstore, load = xload }
+    where xstore (Object a o) = atomicModifyIORef' cacheRef (\m -> (LRU.insert a o m, ()))
+          xload a = fmap (Object a) `fmap` atomicModifyIORef' cacheRef (LRU.lookup a)
+
+newLRUCache :: Maybe Integer -> IO (Store Cached IO)
+newLRUCache len = lruCache `fmap` newIORef (LRU.newLRU len)
