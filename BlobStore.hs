@@ -1,5 +1,7 @@
 {-# LANGUAGE ConstraintKinds, KindSignatures, DataKinds, ScopedTypeVariables #-}
 
+module BlobStore where
+
 import qualified Data.ByteString.Lazy as L
 import Crypto.Hash
 import qualified Data.HashMap.Strict as HM
