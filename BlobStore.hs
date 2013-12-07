@@ -4,6 +4,8 @@ module BlobStore where
 
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
+import qualified Data.ByteString.Lazy.Builder as Builder
+import qualified Data.Attoparsec as A
 import Crypto.Hash
 import qualified Data.HashMap.Strict as HM
 import Data.IORef
@@ -13,9 +15,16 @@ import qualified Data.Cache.LRU as LRU
 import Control.Exception
 import Control.DeepSeq (force)
 import Control.Applicative ((<$>), (<$))
+import Data.Monoid
 
-data Address = SHA512Key (Digest SHA512)
+data Address = SHA512Key B.ByteString
     deriving (Eq, Ord, Show)
+
+addressBuilder :: Address -> Builder.Builder
+addressBuilder (SHA512Key key) = Builder.word8 1 <> Builder.byteString (toBytes key)
+
+addressParse :: A.Parser Address
+addressParse = SHA512Key <$> (A.word8 1 >> A.take 64)
 
 instance Hashable Address where
     hashWithSalt salt (SHA512Key k) = hashWithSalt salt (toBytes k)
@@ -28,7 +37,7 @@ address (Decorated a _) = a
 
 decorate :: L.ByteString -> Decorated
 decorate blob = Decorated (SHA512Key key) blob
-    where key = hashlazy blob
+    where key = toBytes (hashlazy blob :: Digest SHA512)
 
 class Object a where
     serialize :: a -> Decorated
