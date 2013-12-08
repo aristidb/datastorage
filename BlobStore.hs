@@ -1,4 +1,4 @@
-{-# LANGUAGE ConstraintKinds, KindSignatures, DataKinds, ScopedTypeVariables, DeriveFunctor #-}
+{-# LANGUAGE ConstraintKinds, KindSignatures, DataKinds, ScopedTypeVariables, DeriveFunctor, RankNTypes #-}
 
 module BlobStore where
 
@@ -16,6 +16,7 @@ import Control.Exception
 import Control.DeepSeq (force)
 import Control.Applicative ((<$>), (<$))
 import Data.Monoid
+import Control.Lens
 
 data Address = SHA512Key B.ByteString
     deriving (Eq, Ord, Show)
@@ -51,21 +52,33 @@ instance Object B.ByteString where
     serialize = serialize . L.fromStrict
     deserialize = fmap L.toStrict . deserialize
 
-data StorageLevel a = Unknown | Cached { storedObject :: a } | Stored { storedObject :: a }
+data StorageQuality = Cached | Permanent
+    deriving (Show)
+
+data StorageLevel e a = NoValidObject e | Stored StorageQuality a
     deriving (Functor, Show)
 
-data RawStore f = RawStore
-    { rawStore :: Decorated -> f (StorageLevel ())
-    , rawLoad :: Address -> f (StorageLevel Decorated)
+joinStorageLevel :: StorageLevel e (Either e a) -> StorageLevel e a
+joinStorageLevel (NoValidObject e) = NoValidObject e
+joinStorageLevel (Stored _ (Left e)) = NoValidObject e
+joinStorageLevel (Stored q (Right x)) = Stored q x
+
+data Store f a = Store
+    { store :: a -> f (StorageLevel String ())
+    , load :: Address -> f (StorageLevel String a)
     }
 
-newtype Store f a = Store (RawStore f)
+type RawStore f = Store f Decorated
 
-store :: Object a => Store f a -> a -> f (StorageLevel ())
-store (Store st) x = rawStore st (serialize x)
+objectStore :: (Functor f, Monad f, Object a) => RawStore f -> Store f a
+objectStore raw = Store { store = doStore, load = doLoad }
+    where doStore x = store raw (serialize x)
+          doLoad a = joinStorageLevel . fmap deserialize <$> load raw a
 
-load :: (Functor f, Object a) => Store f a -> Address -> f (StorageLevel (Either String a))
-load (Store st) a = fmap deserialize <$> rawLoad st a
+prismStore :: (Functor f, Monad f) => Prism' s a -> Store f s -> Store f a
+prismStore p st = Store { store = doStore, load = doLoad }
+    where doStore o = store st (review p o)
+          doLoad a = joinStorageLevel . fmap (maybe (Left "Excluded type") Right . preview p) <$> load st a
 
 {-
 -- possible implementation of <|>
@@ -79,8 +92,8 @@ type Rel a = a -> a -> a
 
 duplicated :: Monad f => Rel (f ()) -> Rel (f (Maybe Decorated)) ->
                          RawStore p1 f -> RawStore p2 f -> RawStore p3 f
-duplicated (<&>) (<|>) a b = RawStore { rawStore = \o -> rawStore a o <&> rawStore b o
-                                   , rawLoad = \i -> rawLoad a i <|> rawLoad b i }
+duplicated (<&>) (<|>) a b = RawStore { store = \o -> store a o <&> store b o
+                                   , load = \i -> load a i <|> load b i }
 
 duplicatedSerial :: Monad f => RawStore p1 f -> RawStore p2 f -> RawStore p2 f
 duplicatedSerial = duplicated (>>) orM
@@ -89,33 +102,33 @@ cache :: Monad f => RawStore Cached f -> RawStore p f -> RawStore p f
 cache = duplicatedSerial
 
 multi :: Monad f => (Address -> f (RawStore p f)) -> RawStore p f
-multi locate = RawStore { rawStore = doStore, rawLoad = doLoad }
-    where doStore o@(Decorated a _) = locate a >>= (`rawStore` o)
-          doLoad a = locate a >>= (`rawLoad` a)
+multi locate = RawStore { store = doStore, load = doLoad }
+    where doStore o@(Decorated a _) = locate a >>= (`store` o)
+          doLoad a = locate a >>= (`load` a)
 -}
 
 memoryStore :: IORef (HM.HashMap Address L.ByteString) -> RawStore IO
-memoryStore mapRef = RawStore { rawStore = doStore, rawLoad = doLoad }
-    where doStore (Decorated a o) = atomicModifyIORef' mapRef (\m -> (HM.insert a o m, Stored ()))
-          doLoad a = maybe Unknown (Stored . Decorated a) . HM.lookup a <$> readIORef mapRef
+memoryStore mapRef = Store { store = doStore, load = doLoad }
+    where doStore (Decorated a o) = atomicModifyIORef' mapRef (\m -> (HM.insert a o m, Stored Permanent ()))
+          doLoad a = maybe (NoValidObject "NoValidObject address") (Stored Permanent . Decorated a) . HM.lookup a <$> readIORef mapRef
 
 newMemoryStore :: IO (RawStore IO)
 newMemoryStore = memoryStore <$> newIORef HM.empty
 
 lruCache :: IORef (LRU.LRU Address L.ByteString) -> RawStore IO
-lruCache cacheRef = RawStore { rawStore = doStore, rawLoad = doLoad }
-    where doStore (Decorated a o) = atomicModifyIORef' cacheRef (\m -> (LRU.insert a o m, Cached ()))
-          doLoad a = maybe Unknown (Cached . Decorated a) <$> atomicModifyIORef' cacheRef (LRU.lookup a)
+lruCache cacheRef = Store { store = doStore, load = doLoad }
+    where doStore (Decorated a o) = atomicModifyIORef' cacheRef (\m -> (LRU.insert a o m, Stored Cached ()))
+          doLoad a = maybe (NoValidObject "Not in cache") (Stored Cached . Decorated a) <$> atomicModifyIORef' cacheRef (LRU.lookup a)
 
 newLRUCache :: Maybe Integer -> IO (RawStore IO)
 newLRUCache len = lruCache <$> newIORef (LRU.newLRU len)
 
 fsStore :: FilePath -> RawStore IO
-fsStore dir = RawStore { rawStore = doStore, rawLoad = doLoad }
+fsStore dir = Store { store = doStore, load = doLoad }
     where
         addrPath (SHA512Key k) = dir ++ "/O_" ++ show k
-        doStore (Decorated a o) = Stored () <$ L.writeFile (addrPath a) o
+        doStore (Decorated a o) = Stored Permanent () <$ L.writeFile (addrPath a) o
         doLoad a = do m <- try $ force <$> L.readFile (addrPath a)
                       return $ case m of
-                        Left (_ :: IOException) -> Unknown
-                        Right x -> Stored (Decorated a x)
+                        Left (e :: IOException) -> (NoValidObject $ show e)
+                        Right x -> Stored Permanent (Decorated a x)
