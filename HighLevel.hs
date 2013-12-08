@@ -22,13 +22,12 @@ representationBuilder (Embedded x) = Builder.word8 0 <> Builder.lazyByteString x
 representationBuilder (ObjectList as) = Builder.word8 1 <> foldMap BlobStore.addressBuilder as
 
 representationParser :: A.Parser Representation
-representationParser = (Embedded <$> (A.word8 0 *> A.takeLazyByteString) <|>
-                        ObjectList <$> (A.word8 1 *> many BlobStore.addressParse))
-                       <* A.endOfInput
+representationParser = Embedded <$> (A.word8 0 *> A.takeLazyByteString) <|>
+                       ObjectList <$> (A.word8 1 *> many BlobStore.addressParse)
 
 instance BlobStore.Object Representation where
     serialize = BlobStore.decorate . Builder.toLazyByteString . representationBuilder
-    deserialize (BlobStore.Decorated _ x) = AL.eitherResult $ AL.parse representationParser x
+    deserialize (BlobStore.Decorated _ x) = AL.eitherResult $ AL.parse (representationParser <* A.endOfInput) x
 
 data Object (m :: * -> *) a where
     FromAddress :: BlobStore.Address -> Object m a
