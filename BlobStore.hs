@@ -21,6 +21,9 @@ import Control.Lens
 data Address = SHA512Key B.ByteString
     deriving (Eq, Ord, Show)
 
+instance Byteable Address where
+    toBytes (SHA512Key x) = x
+
 addressBuilder :: Address -> Builder.Builder
 addressBuilder (SHA512Key key) = Builder.word8 1 <> Builder.byteString (toBytes key)
 
