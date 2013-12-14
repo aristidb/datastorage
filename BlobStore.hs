@@ -3,9 +3,11 @@
 module BlobStore where
 
 import qualified Data.ByteString as B
+import qualified Data.ByteString.Char8 as B8
 import qualified Data.ByteString.Lazy as L
 import qualified Data.ByteString.Lazy.Builder as Builder
 import qualified Data.Attoparsec as A
+import qualified Data.ByteString.Base64.URL as Base64U
 import Crypto.Hash
 import qualified Data.HashMap.Strict as HM
 import Data.IORef
@@ -129,7 +131,7 @@ newLRUCache len = lruCache <$> newIORef (LRU.newLRU len)
 fsStore :: FilePath -> RawStore IO
 fsStore dir = Store { store = doStore, load = doLoad }
     where
-        addrPath (SHA512Key k) = dir ++ "/O_" ++ show k
+        addrPath (SHA512Key k) = dir ++ "/O_" ++ B8.unpack (Base64U.encode k)
         doStore (Decorated a o) = Stored Permanent () <$ L.writeFile (addrPath a) o
         doLoad a = do m <- try $ force <$> L.readFile (addrPath a)
                       return $ case m of
