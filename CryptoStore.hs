@@ -1,3 +1,4 @@
+{-# LANGUAGE ConstraintKinds, ViewPatterns #-}
 module CryptoStore where
 
 import BlobStore
@@ -9,11 +10,11 @@ import Control.Applicative
 
 data Key = Key { addressKey :: B.ByteString, valueAes :: AES.AES }
 
-cryptoStore :: Functor f => Key -> RawStore f -> RawStore f
+cryptoStore :: (Functor f, Put i, Get o) => Key -> Store f Decorated Decorated -> Store f i o
 cryptoStore k st = Store { store = doStore, load = doLoad }
-    where doStore x@(Decorated a _) = fmap (const a) <$> store st (Decorated (newAddress k a) (encrypt k x))
-          doLoad a = fmap helper <$> load st (newAddress k a)
-            where helper (Decorated _ o) = Decorated a (decrypt k a o)
+    where doStore (decorate -> x@(Decorated a _)) = fmap (const a) <$> store st (Decorated (newAddress k a) (encrypt k x))
+          doLoad a = joinStorageLevel . fmap helper <$> load st (newAddress k a)
+            where helper (Decorated _ o) = unroll a (decrypt k a o)
 
 -- TODO: consider whether SHA512Key is appropriate for the output
 newAddress :: Key -> Address -> Address

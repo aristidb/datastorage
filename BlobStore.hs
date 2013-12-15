@@ -1,10 +1,9 @@
-{-# LANGUAGE ConstraintKinds, KindSignatures, DataKinds, ScopedTypeVariables, DeriveFunctor, RankNTypes #-}
+{-# LANGUAGE ConstraintKinds, KindSignatures, DataKinds, ScopedTypeVariables, DeriveFunctor, RankNTypes, ViewPatterns #-}
 
 module BlobStore where
 
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
-import qualified Data.ByteString.Lazy as L
 import qualified Data.ByteString.Lazy.Builder as Builder
 import qualified Data.Attoparsec as A
 import qualified Data.ByteString.Base64.URL as Base64U
@@ -34,27 +33,38 @@ addressParse = SHA512Key <$> (A.word8 1 >> A.take 64)
 instance Hashable Address where
     hashWithSalt salt (SHA512Key k) = hashWithSalt salt (toBytes k)
 
+class Addressable o where
+    address :: o -> Address
+
+instance Addressable B.ByteString where
+    address o = SHA512Key $ SHA512.hash o
+
 data Decorated = Decorated Address B.ByteString
     deriving (Eq, Show)
 
-address :: Decorated -> Address
-address (Decorated a _) = a
+instance Addressable Decorated where
+    address (Decorated a _) = a
 
-decorate :: B.ByteString -> Decorated
-decorate blob = Decorated (SHA512Key key) blob
-    where key = SHA512.hash blob
+instance Byteable Decorated where
+    toBytes (Decorated _ o) = o
 
-class Object a where
-    serialize :: a -> Decorated
-    deserialize :: Decorated -> Either String a
+type Put a = (Addressable a, Byteable a)
 
-instance Object B.ByteString where
-    serialize = decorate
-    deserialize (Decorated _ x) = Right x
+decorate :: (Addressable o, Byteable o) => o -> Decorated
+decorate o = Decorated (address o) (toBytes o)
 
-instance Object L.ByteString where
-    serialize = serialize . L.toStrict
-    deserialize = fmap L.fromStrict . deserialize
+class Get a where
+    undecorate :: Decorated -> Either String a
+    undecorate (Decorated a x) = unroll a x
+
+    unroll :: Address -> B.ByteString -> Either String a
+    unroll a x = undecorate (Decorated a x)
+
+instance Get Decorated where
+    undecorate = Right
+
+instance Get B.ByteString where
+    unroll _ x = Right x
 
 data StorageQuality = Cached | Permanent
     deriving (Show)
@@ -71,19 +81,24 @@ checkStorageLevel :: (a -> Maybe e) -> StorageLevel e a -> StorageLevel e a
 checkStorageLevel _ s@(NoValidObject _) = s
 checkStorageLevel f s@(Stored _ x) = maybe s NoValidObject (f x)
 
-data Store f a = Store
-    { store :: a -> f (StorageLevel String Address)
-    , load :: Address -> f (StorageLevel String a)
+stored :: Get a => StorageQuality -> Address -> B.ByteString -> StorageLevel String a
+stored q a = joinStorageLevel . Stored q . unroll a
+
+undecorateStored :: Get a => StorageLevel String Decorated -> StorageLevel String a
+undecorateStored = joinStorageLevel . fmap undecorate
+
+data Store f i o = Store
+    { store :: i -> f (StorageLevel String Address)
+    , load :: Address -> f (StorageLevel String o)
     }
 
-type RawStore f = Store f Decorated
-
-objectStore :: (Functor f, Monad f, Object a) => RawStore f -> Store f a
+objectStore :: (Functor f, Monad f, Put i, Get o) => Store f Decorated Decorated -> Store f i o
 objectStore raw = Store { store = doStore, load = doLoad }
-    where doStore x = store raw (serialize x)
-          doLoad a = joinStorageLevel . fmap deserialize <$> load raw a
+    where doStore x = store raw (decorate x)
+          doLoad a = joinStorageLevel . fmap undecorate <$> load raw a
 
-prismStore :: (Functor f, Monad f) => Prism' s a -> Store f s -> Store f a
+-- TODO: use non-simple Prism?
+prismStore :: (Functor f, Monad f) => Prism' s a -> Store f s s -> Store f a a
 prismStore p st = Store { store = doStore, load = doLoad }
     where doStore o = store st (review p o)
           doLoad a = joinStorageLevel . fmap (maybe (Left "Excluded type") Right . preview p) <$> load st a
@@ -115,36 +130,35 @@ multi locate = RawStore { store = doStore, load = doLoad }
           doLoad a = locate a >>= (`load` a)
 -}
 
-memoryStore :: IORef (HM.HashMap Address B.ByteString) -> RawStore IO
+memoryStore :: (Put i, Get o) => IORef (HM.HashMap Address B.ByteString) -> Store IO i o
 memoryStore mapRef = Store { store = doStore, load = doLoad }
-    where doStore (Decorated a o) = atomicModifyIORef' mapRef (\m -> (HM.insert a o m, Stored Permanent a))
-          doLoad a = maybe (NoValidObject "NoValidObject address") (Stored Permanent . Decorated a) . HM.lookup a <$> readIORef mapRef
+    where doStore (decorate -> Decorated a o) = atomicModifyIORef' mapRef (\m -> (HM.insert a o m, Stored Permanent a))
+          doLoad a = maybe (NoValidObject "Unknown address") (stored Permanent a) . HM.lookup a <$> readIORef mapRef
 
-newMemoryStore :: IO (RawStore IO)
+newMemoryStore :: (Put i, Get o) => IO (Store IO i o)
 newMemoryStore = memoryStore <$> newIORef HM.empty
 
-lruCache :: IORef (LRU.LRU Address B.ByteString) -> RawStore IO
+lruCache :: (Put i, Get o) => IORef (LRU.LRU Address B.ByteString) -> Store IO i o
 lruCache cacheRef = Store { store = doStore, load = doLoad }
-    where doStore (Decorated a o) = atomicModifyIORef' cacheRef (\m -> (LRU.insert a o m, Stored Cached a))
-          doLoad a = maybe (NoValidObject "Not in cache") (Stored Cached . Decorated a) <$> atomicModifyIORef' cacheRef (LRU.lookup a)
+    where doStore (decorate -> Decorated a o) = atomicModifyIORef' cacheRef (\m -> (LRU.insert a o m, Stored Cached a))
+          doLoad a = maybe (NoValidObject "Not in cache") (stored Cached a) <$> atomicModifyIORef' cacheRef (LRU.lookup a)
 
-newLRUCache :: Maybe Integer -> IO (RawStore IO)
+newLRUCache :: (Put i, Get o) => Maybe Integer -> IO (Store IO i o)
 newLRUCache len = lruCache <$> newIORef (LRU.newLRU len)
 
-fsStore :: FilePath -> RawStore IO
+fsStore :: (Put i, Get o) => FilePath -> Store IO i o
 fsStore dir = Store { store = doStore, load = doLoad }
     where
         addrPath (SHA512Key k) = dir ++ "/O_" ++ B8.unpack (Base64U.encode k)
-        doStore (Decorated a o) = Stored Permanent a <$ B.writeFile (addrPath a) o
+        doStore (decorate -> Decorated a o) = Stored Permanent a <$ B.writeFile (addrPath a) o
         doLoad a = do m <- try $ B.readFile (addrPath a)
                       return $ case m of
                         Left (e :: IOException) -> (NoValidObject $ show e)
-                        Right x -> Stored Permanent (Decorated a x)
+                        Right x -> stored Permanent a x
 
-verify :: (Functor f, Monad f) => RawStore f -> RawStore f
+verify :: (Functor f, Monad f, Put i, Get o) => Store f Decorated Decorated -> Store f i o
 verify st = Store { store = doStore, load = doLoad }
-    where doStore x@(Decorated a o) | checkAddress a o = checkStorageLevel (check (== a) "Non-matching return address") <$> store st x
-                                    | otherwise        = return $ NoValidObject "Non-matching SHA-512"
-          doLoad a = checkStorageLevel (check (\(Decorated a' o) -> a == a' && checkAddress a o) "Non-matching SHA-512") <$> load st a
-          check f e x = if f x then Nothing else Just e
+    where doStore (decorate -> x@(Decorated a _)) = check (== a) "Non-matching return address" <$> store st x
+          doLoad a = undecorateStored . check (\(Decorated a' o) -> a == a' && checkAddress a o) "Non-matching SHA-512" <$> load st a
+          check f e = checkStorageLevel (\x -> if f x then Nothing else Just e)
           checkAddress (SHA512Key k) o = k == SHA512.hash o
