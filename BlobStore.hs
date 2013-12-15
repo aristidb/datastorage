@@ -8,7 +8,7 @@ import qualified Data.ByteString.Lazy as L
 import qualified Data.ByteString.Lazy.Builder as Builder
 import qualified Data.Attoparsec as A
 import qualified Data.ByteString.Base64.URL as Base64U
-import Crypto.Hash
+import qualified Crypto.Hash.SHA512 as SHA512
 import qualified Data.HashMap.Strict as HM
 import Data.IORef
 import Data.Hashable
@@ -36,14 +36,14 @@ instance Hashable Address where
     hashWithSalt salt (SHA512Key k) = hashWithSalt salt (toBytes k)
 
 data Decorated = Decorated Address L.ByteString
-    deriving (Show)
+    deriving (Eq, Show)
 
 address :: Decorated -> Address
 address (Decorated a _) = a
 
 decorate :: L.ByteString -> Decorated
 decorate blob = Decorated (SHA512Key key) blob
-    where key = toBytes (hashlazy blob :: Digest SHA512)
+    where key = SHA512.hashlazy blob
 
 class Object a where
     serialize :: a -> Decorated
@@ -137,3 +137,14 @@ fsStore dir = Store { store = doStore, load = doLoad }
                       return $ case m of
                         Left (e :: IOException) -> (NoValidObject $ show e)
                         Right x -> Stored Permanent (Decorated a x)
+
+verify :: Monad f => RawStore f -> RawStore f
+verify st = Store { store = doStore, load = doLoad }
+    where doStore x@(Decorated a o) | checkAddress a o = store st x
+                                    | otherwise        = return $ NoValidObject "Non-matching SHA-512"
+          doLoad a = do s <- load st a
+                        return $ case s of
+                          Stored _ (Decorated a' o) | a == a' && checkAddress a o -> s
+                                                    | otherwise -> NoValidObject "Non-matching SHA-512"
+                          NoValidObject _ -> s
+          checkAddress (SHA512Key k) o = k == SHA512.hashlazy o
