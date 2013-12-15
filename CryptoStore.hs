@@ -1,5 +1,5 @@
 {-# LANGUAGE ConstraintKinds, ViewPatterns #-}
-module CryptoStore where
+module CryptoStore (Key(..), cryptoStore) where
 
 import BlobStore
 import qualified Crypto.Hash.SHA512 as SHA512
@@ -14,7 +14,8 @@ cryptoStore :: (Functor f, Put i, Get o) => Key -> Store f Decorated Decorated -
 cryptoStore k st = Store { store = doStore, load = doLoad }
     where doStore (decorate -> x@(Decorated a _)) = fmap (const a) <$> store st (Decorated (newAddress k a) (encrypt k x))
           doLoad a = joinStorageLevel . fmap helper <$> load st (newAddress k a)
-            where helper (Decorated _ o) = unroll a (decrypt k a o)
+            where helper (Decorated _ o) | B.length o `rem` 16 == 0 = unroll a (decrypt k a o)
+                                         | otherwise                = Left "Invalid object size"
 
 -- TODO: consider whether SHA512Key is appropriate for the output
 newAddress :: Key -> Address -> Address
