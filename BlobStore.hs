@@ -15,7 +15,6 @@ import Data.Hashable
 import Data.Byteable
 import qualified Data.Cache.LRU as LRU
 import Control.Exception
-import Control.DeepSeq (force)
 import Control.Applicative ((<$>), (<$))
 import Data.Monoid
 import Control.Lens
@@ -35,27 +34,27 @@ addressParse = SHA512Key <$> (A.word8 1 >> A.take 64)
 instance Hashable Address where
     hashWithSalt salt (SHA512Key k) = hashWithSalt salt (toBytes k)
 
-data Decorated = Decorated Address L.ByteString
+data Decorated = Decorated Address B.ByteString
     deriving (Eq, Show)
 
 address :: Decorated -> Address
 address (Decorated a _) = a
 
-decorate :: L.ByteString -> Decorated
+decorate :: B.ByteString -> Decorated
 decorate blob = Decorated (SHA512Key key) blob
-    where key = SHA512.hashlazy blob
+    where key = SHA512.hash blob
 
 class Object a where
     serialize :: a -> Decorated
     deserialize :: Decorated -> Either String a
 
-instance Object L.ByteString where
+instance Object B.ByteString where
     serialize = decorate
     deserialize (Decorated _ x) = Right x
 
-instance Object B.ByteString where
-    serialize = serialize . L.fromStrict
-    deserialize = fmap L.toStrict . deserialize
+instance Object L.ByteString where
+    serialize = serialize . L.toStrict
+    deserialize = fmap L.fromStrict . deserialize
 
 data StorageQuality = Cached | Permanent
     deriving (Show)
@@ -67,6 +66,10 @@ joinStorageLevel :: StorageLevel e (Either e a) -> StorageLevel e a
 joinStorageLevel (NoValidObject e) = NoValidObject e
 joinStorageLevel (Stored _ (Left e)) = NoValidObject e
 joinStorageLevel (Stored q (Right x)) = Stored q x
+
+checkStorageLevel :: (a -> Maybe e) -> StorageLevel e a -> StorageLevel e a
+checkStorageLevel _ s@(NoValidObject _) = s
+checkStorageLevel f s@(Stored _ x) = maybe s NoValidObject (f x)
 
 data Store f a = Store
     { store :: a -> f (StorageLevel String Address)
@@ -112,7 +115,7 @@ multi locate = RawStore { store = doStore, load = doLoad }
           doLoad a = locate a >>= (`load` a)
 -}
 
-memoryStore :: IORef (HM.HashMap Address L.ByteString) -> RawStore IO
+memoryStore :: IORef (HM.HashMap Address B.ByteString) -> RawStore IO
 memoryStore mapRef = Store { store = doStore, load = doLoad }
     where doStore (Decorated a o) = atomicModifyIORef' mapRef (\m -> (HM.insert a o m, Stored Permanent a))
           doLoad a = maybe (NoValidObject "NoValidObject address") (Stored Permanent . Decorated a) . HM.lookup a <$> readIORef mapRef
@@ -120,7 +123,7 @@ memoryStore mapRef = Store { store = doStore, load = doLoad }
 newMemoryStore :: IO (RawStore IO)
 newMemoryStore = memoryStore <$> newIORef HM.empty
 
-lruCache :: IORef (LRU.LRU Address L.ByteString) -> RawStore IO
+lruCache :: IORef (LRU.LRU Address B.ByteString) -> RawStore IO
 lruCache cacheRef = Store { store = doStore, load = doLoad }
     where doStore (Decorated a o) = atomicModifyIORef' cacheRef (\m -> (LRU.insert a o m, Stored Cached a))
           doLoad a = maybe (NoValidObject "Not in cache") (Stored Cached . Decorated a) <$> atomicModifyIORef' cacheRef (LRU.lookup a)
@@ -132,19 +135,16 @@ fsStore :: FilePath -> RawStore IO
 fsStore dir = Store { store = doStore, load = doLoad }
     where
         addrPath (SHA512Key k) = dir ++ "/O_" ++ B8.unpack (Base64U.encode k)
-        doStore (Decorated a o) = Stored Permanent a <$ L.writeFile (addrPath a) o
-        doLoad a = do m <- try $ force <$> L.readFile (addrPath a)
+        doStore (Decorated a o) = Stored Permanent a <$ B.writeFile (addrPath a) o
+        doLoad a = do m <- try $ B.readFile (addrPath a)
                       return $ case m of
                         Left (e :: IOException) -> (NoValidObject $ show e)
                         Right x -> Stored Permanent (Decorated a x)
 
-verify :: Monad f => RawStore f -> RawStore f
+verify :: (Functor f, Monad f) => RawStore f -> RawStore f
 verify st = Store { store = doStore, load = doLoad }
-    where doStore x@(Decorated a o) | checkAddress a o = store st x
+    where doStore x@(Decorated a o) | checkAddress a o = checkStorageLevel (check (== a) "Non-matching return address") <$> store st x
                                     | otherwise        = return $ NoValidObject "Non-matching SHA-512"
-          doLoad a = do s <- load st a
-                        return $ case s of
-                          Stored _ (Decorated a' o) | a == a' && checkAddress a o -> s
-                                                    | otherwise -> NoValidObject "Non-matching SHA-512"
-                          NoValidObject _ -> s
-          checkAddress (SHA512Key k) o = k == SHA512.hashlazy o
+          doLoad a = checkStorageLevel (check (\(Decorated a' o) -> a == a' && checkAddress a o) "Non-matching SHA-512") <$> load st a
+          check f e x = if f x then Nothing else Just e
+          checkAddress (SHA512Key k) o = k == SHA512.hash o
