@@ -69,7 +69,7 @@ joinStorageLevel (Stored _ (Left e)) = NoValidObject e
 joinStorageLevel (Stored q (Right x)) = Stored q x
 
 data Store f a = Store
-    { store :: a -> f (StorageLevel String ())
+    { store :: a -> f (StorageLevel String Address)
     , load :: Address -> f (StorageLevel String a)
     }
 
@@ -114,7 +114,7 @@ multi locate = RawStore { store = doStore, load = doLoad }
 
 memoryStore :: IORef (HM.HashMap Address L.ByteString) -> RawStore IO
 memoryStore mapRef = Store { store = doStore, load = doLoad }
-    where doStore (Decorated a o) = atomicModifyIORef' mapRef (\m -> (HM.insert a o m, Stored Permanent ()))
+    where doStore (Decorated a o) = atomicModifyIORef' mapRef (\m -> (HM.insert a o m, Stored Permanent a))
           doLoad a = maybe (NoValidObject "NoValidObject address") (Stored Permanent . Decorated a) . HM.lookup a <$> readIORef mapRef
 
 newMemoryStore :: IO (RawStore IO)
@@ -122,7 +122,7 @@ newMemoryStore = memoryStore <$> newIORef HM.empty
 
 lruCache :: IORef (LRU.LRU Address L.ByteString) -> RawStore IO
 lruCache cacheRef = Store { store = doStore, load = doLoad }
-    where doStore (Decorated a o) = atomicModifyIORef' cacheRef (\m -> (LRU.insert a o m, Stored Cached ()))
+    where doStore (Decorated a o) = atomicModifyIORef' cacheRef (\m -> (LRU.insert a o m, Stored Cached a))
           doLoad a = maybe (NoValidObject "Not in cache") (Stored Cached . Decorated a) <$> atomicModifyIORef' cacheRef (LRU.lookup a)
 
 newLRUCache :: Maybe Integer -> IO (RawStore IO)
@@ -132,7 +132,7 @@ fsStore :: FilePath -> RawStore IO
 fsStore dir = Store { store = doStore, load = doLoad }
     where
         addrPath (SHA512Key k) = dir ++ "/O_" ++ B8.unpack (Base64U.encode k)
-        doStore (Decorated a o) = Stored Permanent () <$ L.writeFile (addrPath a) o
+        doStore (Decorated a o) = Stored Permanent a <$ L.writeFile (addrPath a) o
         doLoad a = do m <- try $ force <$> L.readFile (addrPath a)
                       return $ case m of
                         Left (e :: IOException) -> (NoValidObject $ show e)
