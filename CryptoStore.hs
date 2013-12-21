@@ -1,4 +1,4 @@
-{-# LANGUAGE ConstraintKinds, ViewPatterns #-}
+{-# LANGUAGE ConstraintKinds, ViewPatterns, FlexibleContexts #-}
 module CryptoStore (Key(..), cryptoStore) where
 
 import BlobStore
@@ -10,18 +10,22 @@ import Control.Applicative
 
 data Key = Key { addressKey :: B.ByteString, valueAes :: AES.AES }
 
-cryptoStore :: (Functor f, Put i, Get o) => Key -> Store f Decorated Decorated -> Store f i o
+newtype SecretHash = SecretHashSHA512 B.ByteString
+
+instance Byteable SecretHash where
+    toBytes (SecretHashSHA512 x) = x
+
+cryptoStore :: (Functor f, Put Address i, Get Address o) => Key -> Store f SecretHash (Decorated SecretHash) (Decorated SecretHash) -> Store f Address i o
 cryptoStore k st = Store { store = doStore, load = doLoad }
     where doStore (decorate -> x@(Decorated a _)) = fmap (const a) <$> store st (Decorated (newAddress k a) (encrypt k x))
           doLoad a = joinStorageLevel . fmap helper <$> load st (newAddress k a)
             where helper (Decorated _ o) | B.length o `rem` 16 == 0 = unroll a (decrypt k a o)
                                          | otherwise                = Left "Invalid object size"
 
--- TODO: consider whether SHA512Key is appropriate for the output
-newAddress :: Key -> Address -> Address
-newAddress k (SHA512Key a) = SHA512Key . SHA512.hash $ addressKey k `B.append` a
+newAddress :: Key -> Address -> SecretHash
+newAddress k (SHA512Key a) = SecretHashSHA512 . SHA512.hash $ addressKey k `B.append` a
 
-encrypt :: Key -> Decorated -> B.ByteString
+encrypt :: Key -> Decorated Address -> B.ByteString
 encrypt k (Decorated a o) = AES.encryptCBC (valueAes k) (toBytes a) (pad o)
 
 decrypt :: Key -> Address -> B.ByteString -> B.ByteString
