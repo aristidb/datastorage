@@ -35,15 +35,18 @@ instance Hashable Address where
 
 class Addressable a o where
     address :: o -> a
+    verifyAddress :: o -> a -> Bool
 
 instance Addressable Address B.ByteString where
     address o = SHA512Key $ SHA512.hash o
+    verifyAddress o (SHA512Key k) = SHA512.hash o == k
 
 data Decorated a = Decorated a B.ByteString
     deriving (Eq, Show)
 
-instance Addressable a (Decorated a) where
+instance Eq a => Addressable a (Decorated a) where
     address (Decorated a _) = a
+    verifyAddress (Decorated a1 _) a2 = a1 == a2
 
 instance Byteable (Decorated a) where
     toBytes (Decorated _ o) = o
@@ -77,9 +80,9 @@ joinStorageLevel (NoValidObject e) = NoValidObject e
 joinStorageLevel (Stored _ (Left e)) = NoValidObject e
 joinStorageLevel (Stored q (Right x)) = Stored q x
 
-checkStorageLevel :: (a -> Maybe e) -> StorageLevel e a -> StorageLevel e a
-checkStorageLevel _ s@(NoValidObject _) = s
-checkStorageLevel f s@(Stored _ x) = maybe s NoValidObject (f x)
+checkStorageLevel :: (a -> Bool) -> e -> StorageLevel e a -> StorageLevel e a
+checkStorageLevel _ _ s@(NoValidObject _) = s
+checkStorageLevel f e s@(Stored _ x) = if f x then s else NoValidObject e
 
 stored :: Get a x => StorageQuality -> a -> B.ByteString -> StorageLevel String x
 stored q a = joinStorageLevel . Stored q . unroll a
@@ -156,9 +159,7 @@ fsStore dir = Store { store = doStore, load = doLoad }
                         Left (e :: IOException) -> (NoValidObject $ show e)
                         Right x -> stored Permanent a x
 
-verify :: (Functor f, Monad f, Put Address i, Get Address o) => Store f Address (Decorated Address) (Decorated Address) -> Store f Address i o
+verify :: (Functor f, Monad f, Put a i, Get a o, Eq a, Addressable a o) => Store f a (Decorated a) (Decorated a) -> Store f a i o
 verify st = Store { store = doStore, load = doLoad }
-    where doStore (decorate -> x@(Decorated a _)) = check (== a) "Non-matching return address" <$> store st x
-          doLoad a = undecorateStored . check (\(Decorated a' o) -> a == a' && checkAddress a o) "Non-matching SHA-512" <$> load st a
-          check f e = checkStorageLevel (\x -> if f x then Nothing else Just e)
-          checkAddress (SHA512Key k) o = k == SHA512.hash o
+    where doStore (decorate -> x@(Decorated a _)) = checkStorageLevel (== a) "Non-matching return address" <$> store st x
+          doLoad a = checkStorageLevel (\o -> verifyAddress o a) "Object does not validate for address" . undecorateStored <$> load st a

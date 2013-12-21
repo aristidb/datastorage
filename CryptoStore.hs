@@ -11,6 +11,7 @@ import Control.Applicative
 data Key = Key { addressKey :: B.ByteString, valueAes :: AES.AES }
 
 newtype SecretHash = SecretHashSHA512 B.ByteString
+    deriving (Eq)
 
 instance Byteable SecretHash where
     toBytes (SecretHashSHA512 x) = x
