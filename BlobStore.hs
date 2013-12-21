@@ -159,7 +159,7 @@ fsStore dir = Store { store = doStore, load = doLoad }
                         Left (e :: IOException) -> (NoValidObject $ show e)
                         Right x -> stored Permanent a x
 
-verify :: (Functor f, Monad f, Put a i, Get a o, Eq a, Addressable a o) => Store f a (Decorated a) (Decorated a) -> Store f a i o
+verify :: (Functor f, Monad f, Put a i, Get a o, Eq a, Addressable a o) => Store f a i o -> Store f a i o
 verify st = Store { store = doStore, load = doLoad }
-    where doStore (decorate -> x@(Decorated a _)) = checkStorageLevel (== a) "Non-matching return address" <$> store st x
-          doLoad a = checkStorageLevel (\o -> verifyAddress o a) "Object does not validate for address" . undecorateStored <$> load st a
+    where doStore x = checkStorageLevel (== address x) "Non-matching return address" <$> store st x
+          doLoad a = checkStorageLevel (\o -> verifyAddress o a) "Object does not validate for address" <$> load st a
