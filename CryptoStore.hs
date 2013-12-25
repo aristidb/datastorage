@@ -1,4 +1,4 @@
-{-# LANGUAGE ConstraintKinds, ViewPatterns, FlexibleContexts #-}
+{-# LANGUAGE ConstraintKinds, ViewPatterns, FlexibleContexts, DeriveDataTypeable #-}
 module CryptoStore (Key(..), cryptoStore) where
 
 import BlobStore
@@ -7,6 +7,9 @@ import qualified Crypto.Cipher.AES as AES
 import qualified Data.ByteString as B
 import Data.Byteable
 import Control.Applicative
+import Control.Exception
+import Data.Typeable
+import Control.Monad.Catch
 
 data Key = Key { addressKey :: B.ByteString, valueAes :: AES.AES }
 
@@ -16,12 +19,17 @@ newtype SecretHash = SecretHashSHA512 B.ByteString
 instance Byteable SecretHash where
     toBytes (SecretHashSHA512 x) = x
 
-cryptoStore :: (Functor f, Put Address i, Get Address o) => Key -> Store f SecretHash (Decorated SecretHash) (Decorated SecretHash) -> Store f Address i o
+data InvalidObjectSize = InvalidObjectSize
+  deriving (Show, Typeable)
+
+instance Exception InvalidObjectSize
+
+cryptoStore :: (Functor f, MonadCatch f, Put Address i, Get f Address o) => Key -> Store f SecretHash (Decorated SecretHash) (Decorated SecretHash) -> Store f Address i o
 cryptoStore k st = Store { store = doStore, load = doLoad }
-    where doStore (decorate -> x@(Decorated a _)) = fmap (const a) <$> store st (Decorated (newAddress k a) (encrypt k x))
-          doLoad a = joinStorageLevel . fmap helper <$> load st (newAddress k a)
+    where doStore (decorate -> x@(Decorated a _)) = a <$ store st (Decorated (newAddress k a) (encrypt k x))
+          doLoad a = helper =<< load st (newAddress k a)
             where helper (Decorated _ o) | B.length o `rem` 16 == 0 = unroll a (decrypt k a o)
-                                         | otherwise                = Left "Invalid object size"
+                                         | otherwise                = throwM InvalidObjectSize
 
 newAddress :: Key -> Address -> SecretHash
 newAddress k (SHA512Key a) = SecretHashSHA512 . SHA512.hash $ addressKey k `B.append` a
