@@ -4,6 +4,7 @@ module BlobStore where
 
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
+import qualified Data.ByteString.Lazy as L
 import qualified Data.ByteString.Lazy.Builder as Builder
 import qualified Data.Attoparsec as A
 import qualified Data.ByteString.Base64.URL as Base64U
@@ -163,3 +164,8 @@ verify :: (Functor f, Monad f, Put a i, Get a o, Eq a, Addressable a o) => Store
 verify st = Store { store = doStore, load = doLoad }
     where doStore x = checkStorageLevel (== address x) "Non-matching return address" <$> store st x
           doLoad a = checkStorageLevel (\o -> verifyAddress o a) "Object does not validate for address" <$> load st a
+
+parserStore :: (Functor f, Monad f, Put a B.ByteString, Get a B.ByteString) => (i -> Builder.Builder) -> A.Parser o -> Store f a B.ByteString B.ByteString -> Store f a i o
+parserStore render parser st = Store { store = doStore, load = doLoad }
+    where doStore x = store st (L.toStrict . Builder.toLazyByteString . render $ x)
+          doLoad a = joinStorageLevel . fmap (A.parseOnly parser) <$> load st a
