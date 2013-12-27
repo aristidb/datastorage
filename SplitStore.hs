@@ -30,7 +30,9 @@ representationParser = Embedded <$> (A.word8 0 *> A.takeByteString) <|>
 streamStore :: (Functor f, MonadCatch f) => (Producer B.ByteString f () -> Producer B.ByteString f ()) -> Store f Address Representation Representation -> Store f Address (Producer B.ByteString f ()) (Producer B.ByteString f ())
 streamStore splitter st = Store { store = doStore, load = \a -> makeProducer <$> load st a }
     where doStore (splitter -> p) = do xs <- P.toListM $ for p $ \o -> yield =<< lift (store st (Embedded o))
-                                       store st (ObjectList xs)
+                                       case xs of
+                                         [x] -> return x
+                                         _ -> store st (ObjectList xs)
 
           makeProducer (Embedded o) = yield o
           makeProducer (ObjectList xs) = mapM_ (makeProducer <=< lift . load st) xs
