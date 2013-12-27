@@ -27,6 +27,16 @@ representationParser :: A.Parser Representation
 representationParser = Embedded <$> (A.word8 0 *> A.takeByteString) <|>
                        ObjectList <$> (A.word8 1 *> many addressParse)
 
+data SplitStore f = SplitStore {
+      representationStore :: Store f Address Representation Representation
+    , producerStore :: Store f Address (Producer B.ByteString f ()) (Producer B.ByteString f ())
+    }
+
+splitStream :: (Functor f, MonadCatch f) => (Producer B.ByteString f () -> Producer B.ByteString f ()) -> Store f Address B.ByteString B.ByteString -> SplitStore f
+splitStream splitter st = SplitStore rs ps
+    where rs = parserStore representationBuilder representationParser st
+          ps = streamStore splitter rs
+
 streamStore :: (Functor f, MonadCatch f) => (Producer B.ByteString f () -> Producer B.ByteString f ()) -> Store f Address Representation Representation -> Store f Address (Producer B.ByteString f ()) (Producer B.ByteString f ())
 streamStore splitter st = Store { store = doStore, load = \a -> makeProducer <$> load st a }
     where doStore (splitter -> p) = do xs <- P.toListM $ for p $ \o -> yield =<< lift (store st (Embedded o))
