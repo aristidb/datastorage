@@ -31,6 +31,9 @@ instance Byteable Address where
 addressBuilder :: Address -> Builder.Builder
 addressBuilder (SHA512Key key) = Builder.word8 1 <> Builder.byteString (toBytes key)
 
+addressToByteString :: Address -> B.ByteString
+addressToByteString = L.toStrict . Builder.toLazyByteString . addressBuilder
+
 addressParse :: A.Parser Address
 addressParse = SHA512Key <$> (A.word8 1 >> A.take 64)
 
