@@ -75,7 +75,8 @@ splitStore :: (Functor f, MonadCatch f) => (Producer B.ByteString f () -> Produc
 splitStore splitter tst = SplitStore { representationStore = rst, producerStore = pst }
     where rst t = Store { store = doStore, load = doLoad }
             where
-              doStore x = store (pst t) (writeRepresentation x)
+              doStore x = store (pst t') (writeRepresentation x)
+                where t' = case x of { Embedded _ -> t; Chained _ -> Chain t }
 
               doLoad a = do TaggedObject t' o <- load tst a
                             p <- case matchTag t' t of
@@ -96,7 +97,7 @@ splitStore splitter tst = SplitStore { representationStore = rst, producerStore 
                    case s of
                         Left () -> store tst (TaggedObject t v)
                         Right (vx, px) -> let as = (yield v >> yield vx >> px) >-> P.mapM (store tst . TaggedObject t)
-                                          in store (rst $ Chain t) (Chained as)
+                                          in store (rst t) (Chained as)
 
               doLoad a = writeRepresentation <$> load (rst t) a
 
