@@ -14,13 +14,15 @@ import Data.IORef
 import Data.Hashable
 import Data.Byteable
 import qualified Data.Cache.LRU as LRU
-import Control.Applicative ((<$>), (<$))
+import Control.Applicative
 import Data.Monoid
 import Control.Lens
 import Control.Monad.Catch
 import Control.Exception hiding (try)
 import Data.Typeable
 import Control.Monad
+import Pipes
+import qualified Pipes.ByteString as PB
 
 data Address = SHA512Key B.ByteString
     deriving (Eq, Ord, Show)
@@ -29,13 +31,13 @@ instance Byteable Address where
     toBytes (SHA512Key x) = x
 
 addressBuilder :: Address -> Builder.Builder
-addressBuilder (SHA512Key key) = Builder.word8 1 <> Builder.byteString (toBytes key)
+addressBuilder (SHA512Key key) = Builder.string7 "sha512:" <> Builder.byteString (toBytes key)
 
-addressToByteString :: Address -> B.ByteString
-addressToByteString = L.toStrict . Builder.toLazyByteString . addressBuilder
+writeAddress :: Monad f => Address -> Producer' B.ByteString f ()
+writeAddress = PB.fromLazy . Builder.toLazyByteString . addressBuilder
 
 addressParse :: A.Parser Address
-addressParse = SHA512Key <$> (A.word8 1 >> A.take 64)
+addressParse = SHA512Key <$> (A.string (B8.pack "sha512:") *> A.take 64)
 
 instance Hashable Address where
     hashWithSalt salt (SHA512Key k) = hashWithSalt salt (toBytes k)
@@ -80,6 +82,8 @@ data Store f a i o = Store
     { store :: i -> f a
     , load :: a -> f o
     }
+
+type Store' f a x = Store f a x x
 
 objectStore :: (Functor f, Monad f, Put a i, Get f a o) => Store f a (Decorated a) (Decorated a) -> Store f a i o
 objectStore raw = Store { store = doStore, load = doLoad }
@@ -142,7 +146,7 @@ newtype ParseError = ParseError String
 
 instance Exception ParseError
 
-parserStore :: (Functor f, MonadCatch f, Put a B.ByteString, Get f a B.ByteString) => (i -> Builder.Builder) -> A.Parser o -> Store f a B.ByteString B.ByteString -> Store f a i o
+parserStore :: (Functor f, MonadCatch f, Put a B.ByteString, Get f a B.ByteString) => (i -> Builder.Builder) -> A.Parser o -> Store' f a B.ByteString -> Store f a i o
 parserStore render parser st = Store { store = doStore, load = doLoad }
     where doStore x = store st (L.toStrict . Builder.toLazyByteString . render $ x)
           doLoad a = do e <- A.parseOnly parser <$> load st a
