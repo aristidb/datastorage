@@ -97,7 +97,7 @@ splitStore splitter tst = SplitStore { representationStore = rst, producerStore 
                             return $ case matchTag t' t of
                                        ArtificialMatch -> writeRepresentation (Chained $ yield a)
                                        DirectMatch -> yield o
-                                       IndirectMatch -> for (readAddresses (yield o)) $ join . lift . load (pst t)
+                                       IndirectMatch -> for (readAddresses (yield o)) $ join . lift . doLoad
 
 mkSplitter :: Monad m => (Producer B.ByteString m () -> PB.FreeT (Producer B.ByteString m) m ()) -> (Producer B.ByteString m () -> Producer B.ByteString m ())
 mkSplitter f p = go (f p)
