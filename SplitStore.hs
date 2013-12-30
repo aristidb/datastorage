@@ -56,29 +56,17 @@ readAddresses p = do r <- PA.parseMany addressParse p >-> P.map snd
                        Right () -> return ()
 
 
-data Representation f = Embedded (Producer B.ByteString f ()) | Chained (Producer Address f ())
-
-writeRepresentation :: Monad f => Representation f -> Producer B.ByteString f ()
-writeRepresentation (Embedded p) = p
-writeRepresentation (Chained xs) = for xs writeAddress
-
-readRepresentation :: (Functor f, MonadCatch f) => Bool -> Producer B.ByteString f () => Representation f
-readRepresentation True p = Embedded p
-readRepresentation False p = Chained $ readAddresses p
-
 data SplitStore f = SplitStore {
-      representationStore :: ObjectTag -> Store' f Address (Representation f)
+      addressStore :: ObjectTag -> Store' f Address (Producer Address f ())
     , producerStore :: ObjectTag -> Store' f Address (Producer B.ByteString f ())
     }
 
 splitStore :: (Functor f, MonadCatch f) => (Producer B.ByteString f () -> Producer B.ByteString f ()) -> Store' f Address TaggedObject -> SplitStore f
-splitStore splitter tst = SplitStore { representationStore = rst, producerStore = pst }
-    where rst t = Store { store = doStore, load = doLoad }
+splitStore splitter tst = SplitStore { addressStore = ast, producerStore = pst }
+    where ast t = Store { store = doStore, load = doLoad }
             where
-              doStore x = store (pst t') (writeRepresentation x)
-                where t' = case x of { Embedded _ -> t; Chained _ -> Chain t }
-
-              doLoad a = readRepresentation (t == PlainData) <$> load (pst t) a
+              doStore p = store (pst $ Chain t) (for p writeAddress)
+              doLoad a = readAddresses <$> load (pst $ Chain t) a
 
           pst t = Store { store = doStore, load = doLoad }
             where
@@ -91,11 +79,11 @@ splitStore splitter tst = SplitStore { representationStore = rst, producerStore 
                    case s of
                         Left () -> store tst (TaggedObject t v)
                         Right (vx, px) -> let as = (yield v >> yield vx >> px) >-> P.mapM (store tst . TaggedObject t)
-                                          in store (rst t) (Chained as)
+                                          in store (ast t) as
 
               doLoad a = do TaggedObject t' o <- load tst a
                             return $ case matchTag t' t of
-                                       ArtificialMatch -> writeRepresentation (Chained $ yield a)
+                                       ArtificialMatch -> writeAddress a
                                        DirectMatch -> yield o
                                        IndirectMatch -> for (readAddresses (yield o)) $ join . lift . doLoad
 
