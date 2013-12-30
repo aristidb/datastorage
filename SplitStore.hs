@@ -78,12 +78,7 @@ splitStore splitter tst = SplitStore { representationStore = rst, producerStore 
               doStore x = store (pst t') (writeRepresentation x)
                 where t' = case x of { Embedded _ -> t; Chained _ -> Chain t }
 
-              doLoad a = do TaggedObject t' o <- load tst a
-                            let p = case matchTag t' t of
-                                    ArtificialMatch -> writeRepresentation (Chained $ yield a)
-                                    DirectMatch -> yield o
-                                    IndirectMatch -> for (readAddresses (yield o)) $ join . lift . load (pst t)
-                            return $ readRepresentation (t == PlainData) p
+              doLoad a = readRepresentation (t == PlainData) <$> load (pst t) a
 
           pst t = Store { store = doStore, load = doLoad }
             where
@@ -98,7 +93,11 @@ splitStore splitter tst = SplitStore { representationStore = rst, producerStore 
                         Right (vx, px) -> let as = (yield v >> yield vx >> px) >-> P.mapM (store tst . TaggedObject t)
                                           in store (rst t) (Chained as)
 
-              doLoad a = writeRepresentation <$> load (rst t) a
+              doLoad a = do TaggedObject t' o <- load tst a
+                            return $ case matchTag t' t of
+                                       ArtificialMatch -> writeRepresentation (Chained $ yield a)
+                                       DirectMatch -> yield o
+                                       IndirectMatch -> for (readAddresses (yield o)) $ join . lift . load (pst t)
 
 mkSplitter :: Monad m => (Producer B.ByteString m () -> PB.FreeT (Producer B.ByteString m) m ()) -> (Producer B.ByteString m () -> Producer B.ByteString m ())
 mkSplitter f p = go (f p)
