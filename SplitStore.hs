@@ -20,12 +20,12 @@ import Control.Monad.Trans.Free
 data ObjectTag = PlainData | Chain ObjectTag
     deriving (Eq, Show)
 
-data TagMatch = DirectMatch | IndirectMatch | NoMatch
+data TagMatch = DirectMatch | IndirectMatch | ArtificialMatch
     deriving (Show)
 
 matchTag :: ObjectTag -> ObjectTag -> TagMatch
 matchTag PlainData PlainData = DirectMatch
-matchTag PlainData _ = NoMatch
+matchTag PlainData (Chain _) = ArtificialMatch
 matchTag (Chain x) (Chain y) = matchTag x y
 matchTag (Chain _) PlainData = IndirectMatch
 
@@ -79,11 +79,10 @@ splitStore splitter tst = SplitStore { representationStore = rst, producerStore 
                 where t' = case x of { Embedded _ -> t; Chained _ -> Chain t }
 
               doLoad a = do TaggedObject t' o <- load tst a
-                            p <- case matchTag t' t of
-                                    NoMatch -> throwM $ ParseError ("Incompatible tags, expected: " ++ show t ++ " actual: " ++ show t')
-                                    DirectMatch -> return $ yield o
-                                    IndirectMatch -> return $ for (readAddresses (yield o)) $
-                                                        join . lift . load (pst t)
+                            let p = case matchTag t' t of
+                                    ArtificialMatch -> writeRepresentation (Chained $ yield a)
+                                    DirectMatch -> yield o
+                                    IndirectMatch -> for (readAddresses (yield o)) $ join . lift . load (pst t)
                             return $ readRepresentation (t == PlainData) p
 
           pst t = Store { store = doStore, load = doLoad }
