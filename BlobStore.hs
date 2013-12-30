@@ -124,8 +124,8 @@ fsStore :: (Byteable a, Put a i, Get IO a o) => FilePath -> Store IO a i o
 fsStore dir = Store { store = doStore, load = doLoad }
     where
         addrPath k = dir ++ "/O_" ++ B8.unpack (Base64U.encode $ toBytes k)
-        doStore (decorate -> Decorated a o) = a <$ B.writeFile (addrPath a) o
-        doLoad a = unroll a =<< B.readFile (addrPath a)
+        doStore (decorate -> Decorated a o) = putStrLn ("Write " ++ show (toBytes a) ++ " : " ++ show o) >> (a <$ B.writeFile (addrPath a) o)
+        doLoad a = unroll a =<< do o <- B.readFile (addrPath a); putStrLn $ "Read " ++ show (toBytes a) ++ " : " ++ show o; return o
 
 data InvalidObject = InvalidObject
   deriving (Show, Typeable)
