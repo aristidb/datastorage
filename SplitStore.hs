@@ -30,28 +30,6 @@ depthBuilder (ObjectDepth i) = Builder.string7 "depth=" <> Builder.int32Dec i <>
 depthParser :: A.Parser ObjectDepth
 depthParser = ObjectDepth <$> (A.string (B8.pack "depth=") *> A8.decimal <* A.string (B8.pack ":"))
 
-{-
-data ObjectDepth = PlainData | Chain ObjectDepth
-    deriving (Eq, Show)
-
-data TagMatch = DirectMatch | IndirectMatch | ArtificialMatch
-    deriving (Show)
-
-matchTag :: ObjectDepth -> ObjectDepth -> TagMatch
-matchTag PlainData PlainData = DirectMatch
-matchTag PlainData (Chain _) = ArtificialMatch
-matchTag (Chain x) (Chain y) = matchTag x y
-matchTag (Chain _) PlainData = IndirectMatch
-
-depthBuilder :: ObjectDepth -> Builder.Builder
-depthBuilder PlainData = Builder.string7 "plain:"
-depthBuilder (Chain t) = Builder.string7 "chain:" <> depthBuilder t
-
-depthParser :: A.Parser ObjectDepth
-depthParser = (PlainData <$ A.string (B8.pack "plain:"))
-            <|> (Chain <$> (A.string (B8.pack "chain:") *> depthParser))
--}
-
 data DepthObject = DepthObject ObjectDepth B.ByteString
     deriving (Show)
 
