@@ -1,4 +1,4 @@
-{-# LANGUAGE BangPatterns, RecordWildCards, FlexibleContexts, TemplateHaskell, RankNTypes #-}
+{-# LANGUAGE BangPatterns, RecordWildCards, FlexibleContexts, TemplateHaskell, RankNTypes, KindSignatures #-}
 module RollingVector where
 
 import qualified Data.Vector.Generic as G
@@ -9,6 +9,7 @@ import Control.Monad.State.Strict
 import Control.Monad.Trans.Free
 import Pipes
 import Control.Lens
+
 -- import Control.Exception (assert)
 
 hashCombine :: Word64 -> Word64 -> Word64
@@ -90,6 +91,24 @@ warm ht@HashType{..} x =
 rollsplit :: (Monad m, G.Vector v a, G.Vector v Word64) => HashType a -> Pipe (v a) (Bool, v a) (StateT (HashState (v a)) m) ()
 rollsplit ht = await >>= initial ht >>= warm ht
 
+clamp :: (Monad m, G.Vector v a) => Int -> Int -> Producer (Bool, v a) m r -> Producer' (Bool, v a) m r
+clamp nmin nmax = loop 0
+    where yieldSplitted t n d | n + G.length d < nmax = when (not $ G.null d) $ yield (t, d)
+                              | otherwise =
+            do let (d1, d2) = G.splitAt (nmax - n) d
+               yield (True, d1)
+               yieldSplitted t 0 d2
+          loop n p =
+            do x <- lift (next p)
+               case x of
+                 Left r -> return r
+                 Right ((t, d), p') ->
+                   do let n' = n + G.length d
+                      t' <- if n' < nmin
+                        then yield (False, d) >> return False
+                        else yieldSplitted t n d >> return t
+                      loop (if t' then 0 else n') p'
+
 freeIt :: Monad m => Producer (Bool, a) m r -> FreeT (Producer a m) m r
 freeIt p0 =
     do x <- lift (next p0)
@@ -110,3 +129,4 @@ freeIt p0 =
 
 byteHashShort :: HashType Word8
 byteHashShort = HashType { hash = \x -> 31 * fromIntegral x, window = 16, mask = 0xf }
+
