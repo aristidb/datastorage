@@ -12,6 +12,8 @@ import Data.Binary.Get
 import Data.Unique
 import Data.Bits
 import Control.Applicative
+import Data.Binary.IEEE754
+import GHC.Float (float2Double, double2Float)
 
 data Void
 
@@ -129,3 +131,13 @@ parseFixedInt n = do v <- parseFixedUInt n
                        _ | v < 0 -> return v
                          | testBit v (nbits - 1) -> return (- (complement v) .&. (1 `shiftL` nbits - 1) - 1)
                          | otherwise -> return v
+
+parseDouble :: Type -> Get Double
+parseDouble TFloat32 = float2Double <$> getFloat32le
+parseDouble TFloat64 = getFloat64le
+parseDouble _ = fail "Non-matching type"
+
+parseFloat :: Type -> Get Float
+parseFloat TFloat32 = getFloat32le
+parseFloat TFloat64 = double2Float <$> getFloat64le
+parseFloat _ = fail "Non-matching type"
