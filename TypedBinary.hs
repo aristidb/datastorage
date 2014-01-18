@@ -135,9 +135,9 @@ parseFixedInt n = do v <- parseFixedUInt n
 parseDouble :: Type -> Get Double
 parseDouble TFloat32 = float2Double <$> getFloat32le
 parseDouble TFloat64 = getFloat64le
-parseDouble _ = fail "Non-matching type"
+parseDouble t = fromInteger <$> parseInt t
 
 parseFloat :: Type -> Get Float
 parseFloat TFloat32 = getFloat32le
 parseFloat TFloat64 = double2Float <$> getFloat64le
-parseFloat _ = fail "Non-matching type"
+parseFloat t = fromInteger <$> parseInt t
