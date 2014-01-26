@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings, BangPatterns #-}
+{-# LANGUAGE OverloadedStrings, BangPatterns, ViewPatterns #-}
 module TypedBinary where
 
 import qualified Data.Text as T
@@ -40,11 +40,15 @@ data Type =
     TUInt { nbytes :: Maybe Int } |
     TFloat32 |
     TFloat64 |
+    TChar |
     TTuple { fields :: [(Label, Type)] } |
     TVariant { choices :: [(Label, Type)] } |
-    TVector { elementType :: Type, fixedSize :: Maybe Int } |
-    TMap { source :: Type, destination :: Type }
+    TVector { elementType :: Type, fixedSize :: Maybe Int }
+    -- TMap { source :: Type, destination :: Type }
   deriving (Show)
+
+fieldTypes :: [(Label, Type)] -> [Type]
+fieldTypes = map snd
 
 typeBuilder :: Type -> TB.Builder
 typeBuilder TVoid = TB.fromText "void"
@@ -54,10 +58,11 @@ typeBuilder (TInt l) = TB.fromText "integer" <> lengthBuilder l (TB.fromText "by
 typeBuilder (TUInt l) = TB.fromText "unsigned integer" <> lengthBuilder l (TB.fromText "bytes")
 typeBuilder TFloat32 = TB.fromText "float32"
 typeBuilder TFloat64 = TB.fromText "float64"
+typeBuilder TChar = TB.fromText "character"
 typeBuilder (TTuple fs) = TB.fromText "tuple of " <> fieldsBuilder fs
 typeBuilder (TVariant cs) = TB.fromText "variant of " <> fieldsBuilder cs
 typeBuilder (TVector t n) = TB.fromText "vector of " <> maybe mempty ((<> TB.singleton ' ') . TB.decimal) n <> typeBuilder t
-typeBuilder (TMap s t) = TB.fromText "map from " <> typeBuilder s <> TB.fromText " to " <> typeBuilder t
+-- typeBuilder (TMap s t) = TB.fromText "map from " <> typeBuilder s <> TB.fromText " to " <> typeBuilder t
 
 lengthBuilder :: Maybe Int -> TB.Builder -> TB.Builder
 lengthBuilder Nothing _unit = mempty
@@ -70,6 +75,44 @@ fieldsBuilder xs = TB.fromText "{ " <> innerBuilder <> TB.fromText " }"
 
 labelBuilder :: Label -> TB.Builder
 labelBuilder (Label name _) = TB.fromText name
+
+data TypeSize =
+    Constant {-# UNPACK #-} !Int |
+    Range {-# UNPACK #-} !Int !(Maybe Int)
+  deriving (Show)
+
+addSize :: TypeSize -> TypeSize -> TypeSize
+addSize (Constant a) (Constant b) = Constant (a + b)
+addSize (Constant a) (Range x y) = Range (a + x) (fmap (+a) y)
+addSize r@(Range _ _) c@(Constant _) = addSize c r
+addSize (Range x1 y1) (Range x2 y2) = Range (x1 + x2) (liftA2 (+) y1 y2)
+
+maxSize :: TypeSize -> TypeSize -> TypeSize
+maxSize (Constant a) (Constant b) = Range (min a b) (Just $ max a b)
+maxSize (Constant a) (Range x y) = Range (max a x) (max a <$> y)
+maxSize r@(Range _ _) c@(Constant _) = maxSize c r
+maxSize (Range x1 y1) (Range x2 y2) = Range (max x1 x2) (liftA2 max y1 y2)
+
+multSize :: Int -> TypeSize -> TypeSize
+multSize n (Constant a) = Constant (n * a)
+multSize n (Range x y) = Range (n * x) ((* n) <$> y)
+
+sizeOf :: Type -> TypeSize
+sizeOf TVoid = Constant 0
+sizeOf TUnit = Constant 0
+sizeOf TBool = Constant 1
+sizeOf (TInt Nothing) = Range 1 Nothing
+sizeOf (TInt (Just n)) = Constant n
+sizeOf (TUInt Nothing) = Range 1 Nothing
+sizeOf (TUInt (Just n)) = Constant n
+sizeOf TFloat32 = Constant 4
+sizeOf TFloat64 = Constant 8
+sizeOf TChar = Range 1 (Just 4) -- UTF8 uses 1-4 bytes i believe
+sizeOf (TTuple (fieldTypes -> ts)) = foldl' addSize (Constant 0) (map sizeOf ts)
+sizeOf (TVariant (fieldTypes -> ts)) = addSize (Constant 1) $ foldl' maxSize (Constant 0) (map sizeOf ts)
+sizeOf (TVector _ Nothing) = Range 0 Nothing
+sizeOf (TVector et (Just n)) = multSize n (sizeOf et)
+-- sizeOf (TMap _ _) = Range 0 Nothing
 
 parseVoid :: Type -> Get Void
 parseVoid TVoid = fail "Void is uninhabited"
