@@ -1,6 +1,7 @@
 {-# LANGUAGE OverloadedStrings, BangPatterns, ViewPatterns #-}
 module TypedBinary where
 
+import IndexTree
 import qualified Data.Text as T
 import qualified Data.Text.Lazy.Builder as TB
 import qualified Data.Text.Lazy.Builder.Int as TB
@@ -12,8 +13,11 @@ import Data.Binary.Get
 import Data.Unique
 import Data.Bits
 import Control.Applicative
+import Control.Monad
 import Data.Binary.IEEE754
 import GHC.Float (float2Double, double2Float)
+import qualified Data.Vector as V
+import Succinct.Dictionary
 
 data Void
 
@@ -110,9 +114,15 @@ sizeOf TFloat64 = Constant 8
 sizeOf TChar = Range 1 (Just 4) -- UTF8 uses 1-4 bytes i believe
 sizeOf (TTuple (fieldTypes -> ts)) = foldl' addSize (Constant 0) (map sizeOf ts)
 sizeOf (TVariant (fieldTypes -> ts)) = addSize (Constant 1) $ foldl' maxSize (Constant 0) (map sizeOf ts)
-sizeOf (TVector _ Nothing) = Range 0 Nothing
+sizeOf (TVector _ Nothing) = addSize (sizeOf (TUInt Nothing)) (Range 0 Nothing)
 sizeOf (TVector et (Just n)) = multSize n (sizeOf et)
 -- sizeOf (TMap _ _) = Range 0 Nothing
+
+isScalar :: Type -> Bool
+isScalar (TTuple _) = False
+isScalar (TVariant _) = False
+isScalar (TVector _ _) = False
+isScalar _ = True
 
 parseVoid :: Type -> Get Void
 parseVoid TVoid = fail "Void is uninhabited"
@@ -184,3 +194,46 @@ parseFloat :: Type -> Get Float
 parseFloat TFloat32 = getFloat32le
 parseFloat TFloat64 = double2Float <$> getFloat64le
 parseFloat t = fromInteger <$> parseInt t
+
+parseChar :: Type -> Get Char
+parseChar TChar = undefined
+parseChar _ = fail "Non-matching type"
+
+leaf :: Int -> Get (IndexTree l)
+leaf n = skip n >> return (Leaf n)
+
+leafp :: Get a -> Get (IndexTree l)
+leafp p = do n1 <- bytesRead
+             _ <- p
+             n2 <- bytesRead
+             return (Leaf (fromIntegral $ n2-n1))
+
+parseIndex :: Type -> Get (IndexTree Label)
+parseIndex (TTuple fs)
+    = do us <- mapM parseIndex (fieldTypes fs)
+         let ix = makeIndex (map size us)
+         return (Node (map fst fs) ix (V.fromList us))
+parseIndex (TVariant fs)
+    = do i <- fromIntegral <$> getWord8
+         (f,t) <- case drop i fs of
+            [] -> fail ("Invalid type index " ++ show i)
+            fi:_ -> return fi
+         ix <- parseIndex t
+         return (Node [f] (makeIndex [size ix]) (V.singleton ix))
+parseIndex (TVector t qn)
+    = do n <- case qn of
+                Nothing -> parseVarUInt
+                Just n0 -> return n0
+         us <- V.replicateM n (parseIndex t)
+         let ix = case sizeOf t of
+                    Constant m -> Fixed (V.length us) m
+                    _ -> makeIndex (V.toList $ V.map size us)
+         return (Node [] ix us)
+parseIndex TVoid = fail "Uninhabited type"
+parseIndex TUnit = return (Leaf 0)
+parseIndex TBool = leaf 1
+parseIndex t@(TInt _) = leafp (parseInt t :: Get Int)
+parseIndex t@(TUInt _) = leafp (parseInt t :: Get Int)
+parseIndex TFloat32 = leaf 4
+parseIndex TFloat64 = leaf 8
+parseIndex TChar = leafp (parseChar TChar)
