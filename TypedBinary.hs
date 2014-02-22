@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings, BangPatterns, ViewPatterns #-}
+{-# LANGUAGE OverloadedStrings, BangPatterns, ViewPatterns, RecordWildCards #-}
 module TypedBinary where
 
 import IndexTree
@@ -13,11 +13,14 @@ import Data.Binary.Get
 import Data.Unique
 import Data.Bits
 import Control.Applicative
-import Control.Monad
 import Data.Binary.IEEE754
 import GHC.Float (float2Double, double2Float)
 import qualified Data.Vector as V
+import qualified Data.Vector.Generic as G
 import Succinct.Dictionary
+import Data.Functor.Invariant
+import Control.Monad.Trans.Class
+import Control.Monad.Trans.Writer
 
 data Void
 
@@ -49,7 +52,7 @@ data Type =
     TVariant { choices :: [(Label, Type)] } |
     TVector { elementType :: Type, fixedSize :: Maybe Int }
     -- TMap { source :: Type, destination :: Type }
-  deriving (Show)
+  deriving (Eq, Show)
 
 fieldTypes :: [(Label, Type)] -> [Type]
 fieldTypes = map snd
@@ -69,8 +72,8 @@ typeBuilder (TVector t n) = TB.fromText "vector of " <> maybe mempty ((<> TB.sin
 -- typeBuilder (TMap s t) = TB.fromText "map from " <> typeBuilder s <> TB.fromText " to " <> typeBuilder t
 
 lengthBuilder :: Maybe Int -> TB.Builder -> TB.Builder
-lengthBuilder Nothing _unit = mempty
-lengthBuilder (Just n) unit = TB.fromText " of " <> TB.decimal n <> TB.singleton ' ' <> unit
+lengthBuilder Nothing _measure = mempty
+lengthBuilder (Just n) measure = TB.fromText " of " <> TB.decimal n <> TB.singleton ' ' <> measure
 
 fieldsBuilder :: [(Label, Type)] -> TB.Builder
 fieldsBuilder xs = TB.fromText "{ " <> innerBuilder <> TB.fromText " }"
@@ -124,24 +127,45 @@ isScalar (TVariant _) = False
 isScalar (TVector _ _) = False
 isScalar _ = True
 
-parseVoid :: Type -> Get Void
-parseVoid TVoid = fail "Void is uninhabited"
-parseVoid _ = fail "Non-matching type"
+data Grammar a = Grammar { parse :: Type -> Get a, write :: Type -> a -> Either String B.Builder, defaultType :: Type }
 
-parseUnit :: Type -> Get ()
-parseUnit TUnit = return ()
-parseUnit _ = fail "Non-matching type"
+writeW :: Grammar a -> Type -> a -> WriterT B.Builder (Either String) ()
+writeW g t x = do a <- lift (write g t x)
+                  tell a
 
-parseBool :: Type -> Get Bool
-parseBool TBool = fmap (> 0) getWord8
-parseBool _ = fail "Non-matching type"
+{-
+instance Invariant Grammar where
+    invmap f g (Grammar p w dt) = Grammar (fmap f . p) ((. fmap g) . w) dt
+-}
 
-parseInt :: (Num a, Ord a, Bits a) => Type -> Get a
-parseInt (TInt Nothing) = parseVarInt
-parseInt (TInt (Just n)) = parseFixedInt n
-parseInt (TUInt Nothing) = parseVarUInt
-parseInt (TUInt (Just n)) = parseFixedUInt n
-parseInt _ = fail "Non-matching type"
+simpleTyped :: Type -> Get a -> (a -> B.Builder) -> Grammar a
+simpleTyped t p w = Grammar { parse = \t' -> if t == t' then p else fail ("Non-matching type " ++ show t' ++ ", expected " ++ show t),
+                              write = \t' -> if t == t' then Right . w else const (Left "Non-matching type"),
+                              defaultType = t }
+
+void :: Grammar Void
+void = simpleTyped TVoid (fail "Void is uninhabited") (\_ -> error "Void is uninhabited")
+
+unit :: Grammar ()
+unit = simpleTyped TUnit (return ()) (\() -> mempty)
+
+bool :: Grammar Bool
+bool = simpleTyped TBool (fmap (> 0) getWord8) (\v -> B.word8 (if v then 1 else 0))
+
+int :: (Integral a, Bits a) => Grammar a
+int = Grammar { .. }
+    where
+      parse (TInt Nothing) = parseVarInt
+      parse (TInt (Just n)) = parseFixedInt n
+      parse (TUInt Nothing) = parseVarUInt
+      parse (TUInt (Just n)) = parseFixedUInt n
+      parse _ = fail "Non-matching type"
+      write (TInt Nothing) = Right . encodeVarInt
+      write (TUInt Nothing) = Right . encodeVarUInt
+      write (TInt (Just n)) = Right . encodeFixedInt n
+      write (TUInt (Just n)) = Right . encodeFixedInt n
+      write _ = const (Left "Non-matching type")
+      defaultType = TInt Nothing
 
 parseVarUInt :: (Num a, Bits a) => Get a
 parseVarUInt = go 0 0
@@ -173,9 +197,15 @@ parseFixedUInt 1 = fromIntegral <$> getWord8
 parseFixedUInt 2 = fromIntegral <$> getWord16le
 parseFixedUInt 4 = fromIntegral <$> getWord32le
 parseFixedUInt 8 = fromIntegral <$> getWord64le
-parseFixedUInt n = do b <- getWord8
-                      v <- parseFixedUInt (n-1)
-                      return $ fromIntegral b .|. (v `shiftL` 8)
+parseFixedUInt _ = error "Non-standard fixed UInt size not supported yet"
+
+encodeFixedInt :: Integral a => Int -> a -> B.Builder
+encodeFixedInt 0 _ = mempty
+encodeFixedInt 1 v = B.word8 (fromIntegral v)
+encodeFixedInt 2 v = B.word16LE (fromIntegral v)
+encodeFixedInt 4 v = B.word32LE (fromIntegral v)
+encodeFixedInt 8 v = B.word64LE (fromIntegral v)
+encodeFixedInt _ _ = error "Non-standard fixed UInt size not supported yet"
 
 parseFixedInt :: (Num a, Ord a, Bits a) => Int -> Get a
 parseFixedInt n = do v <- parseFixedUInt n
@@ -185,19 +215,48 @@ parseFixedInt n = do v <- parseFixedUInt n
                          | testBit v (nbits - 1) -> return (- (complement v) .&. (1 `shiftL` nbits - 1) - 1)
                          | otherwise -> return v
 
-parseDouble :: Type -> Get Double
-parseDouble TFloat32 = float2Double <$> getFloat32le
-parseDouble TFloat64 = getFloat64le
-parseDouble t = fromInteger <$> parseInt t
+double :: Grammar Double
+double = Grammar { parse = parseF, write = writeF, defaultType = def }
+    where
+      parseF TFloat32 = float2Double <$> getFloat32le
+      parseF TFloat64 = getFloat64le
+      parseF t = fromInteger <$> parse int t
+      writeF TFloat32 = Right . B.floatLE . double2Float
+      writeF TFloat64 = Right . B.doubleLE
+      writeF _ = const (Left "Non-matching type")
+      def = TFloat64
 
-parseFloat :: Type -> Get Float
-parseFloat TFloat32 = getFloat32le
-parseFloat TFloat64 = double2Float <$> getFloat64le
-parseFloat t = fromInteger <$> parseInt t
+float :: Grammar Float
+float = Grammar { parse = parseF, write = writeF, defaultType = def }
+    where
+      parseF TFloat32 = getFloat32le
+      parseF TFloat64 = double2Float <$> getFloat64le
+      parseF t = fromInteger <$> parse int t
+      writeF TFloat32 = Right . B.floatLE
+      writeF TFloat64 = Right . B.doubleLE . float2Double
+      writeF _ = const (Left "Non-matching type")
+      def = TFloat32
 
-parseChar :: Type -> Get Char
-parseChar TChar = undefined
-parseChar _ = fail "Non-matching type"
+-- TODO
+char :: Grammar Char
+char = simpleTyped TChar undefined undefined
+
+vector :: G.Vector v a => Grammar a -> Grammar (v a)
+vector inner = Grammar { parse = parseF, write = writeF, defaultType = def }
+    where
+      parseF (TVector t qn) =
+        do n <- case qn of
+                  Just n0 -> return n0
+                  Nothing -> parseVarUInt
+           G.replicateM n (parse inner t)
+      parseF _ = fail "Non-matching type"
+      writeF (TVector t Nothing) v = execWriterT $
+        do tell (encodeVarUInt (G.length v))
+           G.forM_ v (writeW inner t)
+      writeF (TVector t (Just n)) v | n == G.length v = execWriterT $ G.forM_ v (writeW inner t)
+                                    | otherwise = Left "Non-matching length"
+      writeF _ _ = Left "Non-matching type"
+      def = TVector (defaultType inner) Nothing
 
 leaf :: Int -> Get (IndexTree l)
 leaf n = skip n >> return (Leaf n)
@@ -232,8 +291,8 @@ parseIndex (TVector t qn)
 parseIndex TVoid = fail "Uninhabited type"
 parseIndex TUnit = return (Leaf 0)
 parseIndex TBool = leaf 1
-parseIndex t@(TInt _) = leafp (parseInt t :: Get Int)
-parseIndex t@(TUInt _) = leafp (parseInt t :: Get Int)
+parseIndex t@(TInt _) = leafp (parse int t :: Get Int)
+parseIndex t@(TUInt _) = leafp (parse int t :: Get Int)
 parseIndex TFloat32 = leaf 4
 parseIndex TFloat64 = leaf 8
-parseIndex TChar = leafp (parseChar TChar)
+parseIndex TChar = leafp (parse char TChar)
