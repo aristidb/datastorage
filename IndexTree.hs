@@ -48,9 +48,9 @@ instance Access Int (IndexTree l) where
     size (Node _ ix _) = size ix
 
     -- depth
-    Absent ! i = error "Absent"
-    Leaf n ! i = 0
-    Node _ ix us ! _ = undefined
+    Absent ! _i = error "Absent"
+    Leaf _n ! _i = 0
+    Node _ _ix _us ! _ = undefined
 
 newtype SizeList = SizeList [Int]
 
