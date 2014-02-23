@@ -1,7 +1,7 @@
-{-# LANGUAGE OverloadedStrings, BangPatterns, ViewPatterns, RecordWildCards #-}
+{-# LANGUAGE OverloadedStrings, BangPatterns, ViewPatterns, RecordWildCards, GADTs, RankNTypes #-}
 module TypedBinary where
 
-import IndexTree
+-- import IndexTree
 import qualified Data.Text as T
 import qualified Data.Text.Lazy.Builder as TB
 import qualified Data.Text.Lazy.Builder.Int as TB
@@ -15,12 +15,13 @@ import Data.Bits
 import Control.Applicative
 import Data.Binary.IEEE754
 import GHC.Float (float2Double, double2Float)
-import qualified Data.Vector as V
+-- import qualified Data.Vector as V
 import qualified Data.Vector.Generic as G
-import Succinct.Dictionary
+-- import Succinct.Dictionary
 import Data.Functor.Invariant
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Writer
+import Control.Lens
 
 data Void
 
@@ -133,10 +134,11 @@ writeW :: Grammar a -> Type -> a -> WriterT B.Builder (Either String) ()
 writeW g t x = do a <- lift (write g t x)
                   tell a
 
-{-
 instance Invariant Grammar where
-    invmap f g (Grammar p w dt) = Grammar (fmap f . p) ((. fmap g) . w) dt
--}
+    invmap f g (Grammar p w dt) = Grammar (fmap f . p) ((. g) . w) dt
+
+isomap :: Iso' a b -> Grammar a -> Grammar b
+isomap m = invmap (view m) (review m)
 
 simpleTyped :: Type -> Get a -> (a -> B.Builder) -> Grammar a
 simpleTyped t p w = Grammar { parse = \t' -> if t == t' then p else fail ("Non-matching type " ++ show t' ++ ", expected " ++ show t),
@@ -258,6 +260,31 @@ vector inner = Grammar { parse = parseF, write = writeF, defaultType = def }
       writeF _ _ = Left "Non-matching type"
       def = TVector (defaultType inner) Nothing
 
+data Element a = Pure a | Labelled Label (Grammar a)
+
+instance Show a => Show (Element a) where
+    showsPrec n (Pure a) = showParen (n > 10) (showString "Pure " . showsPrec 11 a)
+    showsPrec n (Labelled l _) = showParen (n > 10) (showString "Labelled <" . shows l . showString "> <g>")
+
+data Prod a where
+    Nil :: Prod ()
+    (:.:) :: (Show a, Show b) => Element a -> Prod b -> Prod (a, b)
+
+infixr 9 :.:
+
+instance Show a => Show (Prod a) where
+    showsPrec _ Nil = showString "Nil"
+    showsPrec n (c :.: q) = showParen (n > 9) (showsPrec 10 c . showString " :.: " . showsPrec 10 q)
+
+parseStep :: Label -> Prod a -> Type -> Get (Prod a)
+parseStep _ Nil _ = return Nil
+parseStep l (Labelled l' g :.: q) t | l == l' = (:.: q) . Pure <$> parse g t
+parseStep l (c :.: q) t = (c :.:) <$> parseStep l q t
+
+buildStep :: Prod (a, b) -> (Prod b, Type -> a -> Either String B.Builder)
+buildStep (Pure _ :.: q) = (q, \t a -> return mempty)
+
+{-
 leaf :: Int -> Get (IndexTree l)
 leaf n = skip n >> return (Leaf n)
 
@@ -296,3 +323,4 @@ parseIndex t@(TUInt _) = leafp (parse int t :: Get Int)
 parseIndex TFloat32 = leaf 4
 parseIndex TFloat64 = leaf 8
 parseIndex TChar = leafp (parse char TChar)
+-}
