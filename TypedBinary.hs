@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings, BangPatterns, ViewPatterns, RecordWildCards, GADTs, RankNTypes #-}
+{-# LANGUAGE OverloadedStrings, BangPatterns, ViewPatterns, RecordWildCards, GADTs, RankNTypes, TupleSections #-}
 module TypedBinary where
 
 -- import IndexTree
@@ -20,7 +20,7 @@ import qualified Data.Vector.Generic as G
 -- import Succinct.Dictionary
 import Data.Functor.Invariant
 import Control.Monad.Trans.Class
-import Control.Monad.Trans.Writer
+import Control.Monad.Writer
 import Control.Lens
 
 data Void
@@ -128,7 +128,11 @@ isScalar (TVariant _) = False
 isScalar (TVector _ _) = False
 isScalar _ = True
 
-data Grammar a = Grammar { parse :: Type -> Get a, write :: Type -> a -> Either String B.Builder, defaultType :: Type }
+type Parser a = Type -> Get a
+
+type Generator a = Type -> a -> Either String B.Builder
+
+data Grammar a = Grammar { parse :: Parser a, write :: Generator a, defaultType :: Type }
 
 writeW :: Grammar a -> Type -> a -> WriterT B.Builder (Either String) ()
 writeW g t x = do a <- lift (write g t x)
@@ -266,23 +270,54 @@ instance Show a => Show (Element a) where
     showsPrec n (Pure a) = showParen (n > 10) (showString "Pure " . showsPrec 11 a)
     showsPrec n (Labelled l _) = showParen (n > 10) (showString "Labelled <" . shows l . showString "> <g>")
 
-data Prod a where
-    Nil :: Prod ()
-    (:.:) :: (Show a, Show b) => Element a -> Prod b -> Prod (a, b)
+data Tuple a where
+    Nil :: Tuple ()
+    -- the "Show" constraints are just temporarily here for debugging
+    (:.:) :: (Show a, Show b) => Element a -> Tuple b -> Tuple (a, b)
 
 infixr 9 :.:
 
-instance Show a => Show (Prod a) where
+instance Show a => Show (Tuple a) where
     showsPrec _ Nil = showString "Nil"
     showsPrec n (c :.: q) = showParen (n > 9) (showsPrec 10 c . showString " :.: " . showsPrec 10 q)
 
-parseStep :: Label -> Prod a -> Type -> Get (Prod a)
-parseStep _ Nil _ = return Nil
+parseStep :: Label -> Tuple a -> Parser (Tuple a)
+parseStep _ Nil _ = fail "Label not found"
 parseStep l (Labelled l' g :.: q) t | l == l' = (:.: q) . Pure <$> parse g t
 parseStep l (c :.: q) t = (c :.:) <$> parseStep l q t
 
-buildStep :: Prod (a, b) -> (Prod b, Type -> a -> Either String B.Builder)
-buildStep (Pure _ :.: q) = (q, \t a -> return mempty)
+extract :: Tuple a -> Maybe a
+extract Nil = Just ()
+extract (Pure x :.: xs) = (x, ) <$> extract xs
+extract (Labelled _ _ :.: _) = Nothing
+
+buildStep :: Tuple a -> Label -> Generator a
+buildStep Nil _l _t () = Left "Label not found"
+buildStep (Pure _x :.: xs) l t (_, q) = buildStep xs l t q
+buildStep (Labelled l g :.: xs) l' t (c, q) | l == l' = write g t c
+                                            | otherwise = buildStep xs l' t q
+
+tuple :: Tuple a -> Grammar a
+tuple p = Grammar { parse = parseF, write = writeF, defaultType = TTuple (def p) }
+    where
+      parseF (TTuple fs) =
+        do p' <- go p fs
+           case extract p' of
+             Just a -> return a
+             Nothing -> fail "Not all fields could be parsed"
+        where
+          go px [] = return px
+          go px ((l,t) : xs) = do px' <- parseStep l px t
+                                  go px' xs
+      parseF _ = fail "Non-matching type, tuple expected"
+
+      writeF (TTuple _fs) = undefined
+      writeF _ = fail "Non-matching type, tuple expected"
+
+      def :: Tuple a -> [(Label, Type)]
+      def Nil = []
+      def (Pure _x :.: xs) = def xs
+      def (Labelled l g :.: xs) = (l, defaultType g) : def xs
 
 {-
 leaf :: Int -> Get (IndexTree l)
@@ -294,7 +329,7 @@ leafp p = do n1 <- bytesRead
              n2 <- bytesRead
              return (Leaf (fromIntegral $ n2-n1))
 
-parseIndex :: Type -> Get (IndexTree Label)
+parseIndex :: Parser (IndexTree Label)
 parseIndex (TTuple fs)
     = do us <- mapM parseIndex (fieldTypes fs)
          let ix = makeIndex (map size us)
