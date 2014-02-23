@@ -311,8 +311,12 @@ tuple p = Grammar { parse = parseF, write = writeF, defaultType = TTuple (def p)
                                   go px' xs
       parseF _ = fail "Non-matching type, tuple expected"
 
-      writeF (TTuple _fs) = undefined
-      writeF _ = fail "Non-matching type, tuple expected"
+      writeF (TTuple fs) a = execWriterT (go fs)
+        where
+          go [] = return ()
+          go ((l,t) : xs) = do tell =<< lift (buildStep p l t a)
+                               go xs
+      writeF _ _ = fail "Non-matching type, tuple expected"
 
       def :: Tuple a -> [(Label, Type)]
       def Nil = []
