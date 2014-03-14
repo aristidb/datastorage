@@ -25,6 +25,9 @@ import Control.Lens
 
 data Void
 
+instance Show Void where
+    show _ = error "Void"
+
 -- do not leak (a hash of the) the transient ID to disk or rely on the particular ordering between runs of the program!
 data Label = Label { humanReadable :: Text, transientId :: Unique }
 
@@ -322,6 +325,45 @@ tuple p = Grammar { parse = parseF, write = writeF, defaultType = TTuple (def p)
       def Nil = []
       def (Pure _x :.: xs) = def xs
       def (Labelled l g :.: xs) = (l, defaultType g) : def xs
+
+data Variant a where
+    V :: Variant Void
+    (:|:) :: (Label, Grammar a) -> Variant b -> Variant (Either a b)
+
+infixr 9 :|:
+
+variant :: Variant a -> Grammar a
+variant p = Grammar { parse = parseF, write = writeF, defaultType = TVariant (def p) }
+    where
+      parseF (TVariant fs) =
+        do idx <- fromIntegral <$> getWord8
+           (l,t) <- case drop idx fs of
+             [] -> fail ("Invalid tag index " ++ show idx)
+             x:_ -> return x
+           go p l t
+        where
+          go :: Variant a -> Label -> Parser a
+          go V l _t = fail ("Invalid label " ++ show l)
+          go ((l,g) :|: ps) l' t | l == l' = Left <$> parse g t
+                                 | otherwise = Right <$> go ps l' t
+      parseF _ = fail "Non-matching type, variant expected"
+
+      writeF (TVariant fs) = execWriterT . go p
+        where
+          go :: Variant a -> a -> WriterT B.Builder (Either String) ()
+          go V _ = error "Void"
+          go ((l,g) :|: _) (Left a) =
+            case lookup l (zipWith (\i (x,y) -> (x,(i,y))) [0::Int ..] fs) of
+              Nothing -> fail ("Invalid label " ++ show l)
+              Just (i,t) ->
+                do tell $ B.word8 (fromIntegral i)
+                   writeW g t a
+          go (_ :|: ps) (Right b) = go ps b
+      writeF _ = fail "Non-matching type, variant expected"
+
+      def :: Variant a -> [(Label, Type)]
+      def V = []
+      def ((l,g) :|: xs) = (l, defaultType g) : def xs
 
 {-
 leaf :: Int -> Get (IndexTree l)
