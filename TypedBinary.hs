@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings, BangPatterns, ViewPatterns, RecordWildCards, GADTs, RankNTypes, TupleSections, KindSignatures, TypeFamilies, FlexibleInstances, UndecidableInstances, FlexibleContexts #-}
+{-# LANGUAGE OverloadedStrings, BangPatterns, ViewPatterns, RecordWildCards, GADTs, RankNTypes, TupleSections, KindSignatures, TypeFamilies, FlexibleInstances, UndecidableInstances, FlexibleContexts, ScopedTypeVariables, TypeOperators #-}
 module TypedBinary where
 
 -- import IndexTree
@@ -396,14 +396,18 @@ tuple p = Grammar { parse = parseF, write = writeF, defaultType = TTuple (def p)
           go px [] = return px
           go px ((l,t) : xs) = do px' <- parseStep l px t
                                   go px' xs
-      parseF _ = fail "Non-matching type, tuple expected"
+      parseF t = case p of
+                   Labelled _l g :.: Nil -> (, ()) <$> parse g t
+                   _ -> fail "Non-matching type, tuple expected"
 
       writeF (TTuple fs) a = execWriterT (go fs)
         where
           go [] = return ()
           go ((l,t) : xs) = do tell =<< lift (buildStep p l t a)
                                go xs
-      writeF _ _ = fail "Non-matching type, tuple expected"
+      writeF t a = case p of
+                     Labelled _l g :.: Nil -> write g t (fst a)
+                     _ -> fail "Non-matching type, tuple expected"
 
       def :: Tuple a -> [(Label, Type)]
       def Nil = []
@@ -430,9 +434,12 @@ variant p = Grammar { parse = parseF, write = writeF, defaultType = TVariant (de
           go V l _t = fail ("Invalid label " ++ show l)
           go ((l,g) :|: ps) l' t | l == l' = Left <$> parse g t
                                  | otherwise = Right <$> go ps l' t
-      parseF _ = fail "Non-matching type, variant expected"
+      parseF t = case p of
+                   -- special-case for single constructor variants
+                   (_l, g) :|: V -> Left <$> parse g t
+                   _ -> fail "Non-matching type, variant expected"
 
-      writeF (TVariant fs) = execWriterT . go p
+      writeF (TVariant fs) d = execWriterT (go p d)
         where
           go :: Variant a -> a -> WriterT B.Builder (Either String) ()
           go V _ = error "Void"
@@ -443,7 +450,10 @@ variant p = Grammar { parse = parseF, write = writeF, defaultType = TVariant (de
                 do tell $ B.word8 (fromIntegral i)
                    writeW g t a
           go (_ :|: ps) (Right b) = go ps b
-      writeF _ = fail "Non-matching type, variant expected"
+      writeF t d = case p of
+                     -- special-case for single constructor variants
+                     (_l, g) :|: V -> write g t (either id (error "Void") d)
+                     _ -> fail "Non-matching type, variant expected"
 
       def :: Variant a -> [(Label, Type)]
       def V = []
@@ -458,7 +468,24 @@ instance GenericGrammar V1 where
 instance GenericGrammar U1 where
     repGrammar = invmap (\() -> U1) (\U1 -> ()) unit
 
--- instance GenericGrammar 
+class TupleGrammar (rep :: * -> *) where
+    type TupleT rep :: *
+    tiso :: Iso' (TupleT rep) (rep x)
+    tup :: rep x -> Tuple (TupleT rep)
+
+class VariantGrammar (rep :: * -> *) where
+    type VarT rep :: *
+    viso :: Iso' (VarT rep) (rep x)
+    var :: rep x -> Variant (VarT rep)
+
+instance TupleGrammar f => VariantGrammar (M1 C c f) where
+    type VarT (M1 C c f) = Either (TupleT f) Void
+
+instance (TupleGrammar a, VariantGrammar b) => VariantGrammar (a :*: b) where
+    type VarT (a :*: b) = Either (TupleT a) (VarT b)
+
+instance VariantGrammar f => GenericGrammar (M1 D c f) where
+    repGrammar = invmap M1 unM1 $ isomap viso $ variant $ var (undefined :: f x)
 
 gGrammar :: (Generic a, GenericGrammar (Rep a)) => Grammar a
 gGrammar = isomap (from generic) repGrammar
