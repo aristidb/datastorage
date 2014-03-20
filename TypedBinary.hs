@@ -1,33 +1,48 @@
-{-# LANGUAGE OverloadedStrings, BangPatterns, ViewPatterns, RecordWildCards, GADTs, RankNTypes, TupleSections #-}
+{-# LANGUAGE OverloadedStrings, BangPatterns, ViewPatterns, RecordWildCards, GADTs, RankNTypes, TupleSections, KindSignatures, TypeFamilies, FlexibleInstances, UndecidableInstances, FlexibleContexts #-}
 module TypedBinary where
 
 -- import IndexTree
 import qualified Data.Text as T
+import qualified Data.Text.Lazy as LT
 import qualified Data.Text.Lazy.Builder as TB
 import qualified Data.Text.Lazy.Builder.Int as TB
 import qualified Data.ByteString.Lazy.Builder as B
+import qualified Data.ByteString as B
+import qualified Data.ByteString.Lazy as L
 import Data.Text (Text)
 import Data.Monoid
 import Data.List
 import Data.Binary.Get
-import Data.Unique
+-- import Data.Unique
 import Data.Bits
 import Control.Applicative
 import Data.Binary.IEEE754
 import GHC.Float (float2Double, double2Float)
--- import qualified Data.Vector as V
+import qualified Data.Vector as V
+import qualified Data.Vector.Unboxed as UV
+import qualified Data.Vector.Storable as SV
 import qualified Data.Vector.Generic as G
 -- import Succinct.Dictionary
 import Data.Functor.Invariant
 import Control.Monad.Trans.Class
-import Control.Monad.Writer
+import Control.Monad.Writer hiding (void)
 import Control.Lens
+import qualified Data.Text.Lens as T
+import qualified Data.ByteString.Lens as B
+import qualified Data.Vector.Lens as V
+import GHC.Generics hiding (from, to)
+import GHC.Generics.Lens
+import Data.Word
+import Data.Int
 
 data Void
 
 instance Show Void where
     show _ = error "Void"
 
+type Label = Text
+
+{-
 -- do not leak (a hash of the) the transient ID to disk or rely on the particular ordering between runs of the program!
 data Label = Label { humanReadable :: Text, transientId :: Unique }
 
@@ -42,6 +57,7 @@ instance Eq Label where
 
 instance Ord Label where
     compare (Label _ a) (Label _ b) = compare a b
+-}
 
 data Type =
     TVoid |
@@ -85,11 +101,12 @@ fieldsBuilder xs = TB.fromText "{ " <> innerBuilder <> TB.fromText " }"
           fieldBuilder (l, t) = labelBuilder l <> TB.fromText " as " <> typeBuilder t
 
 labelBuilder :: Label -> TB.Builder
-labelBuilder (Label name _) = TB.fromText name
+labelBuilder label = TB.fromText label
 
 data TypeSize =
     Constant {-# UNPACK #-} !Int |
     Range {-# UNPACK #-} !Int !(Maybe Int)
+
   deriving (Show)
 
 addSize :: TypeSize -> TypeSize -> TypeSize
@@ -137,6 +154,18 @@ type Generator a = Type -> a -> Either String B.Builder
 
 data Grammar a = Grammar { parse :: Parser a, write :: Generator a, defaultType :: Type }
 
+parse' :: Grammar a -> Get a
+parse' g = parse g (defaultType g)
+
+simpleParse :: Grammar a -> L.ByteString -> a
+simpleParse g = runGet (parse' g)
+
+write' :: Grammar a -> a -> Either String B.Builder
+write' g = write g (defaultType g)
+
+simpleWrite :: Grammar a -> a -> Either String L.ByteString
+simpleWrite g x = B.toLazyByteString <$> write' g x
+
 writeW :: Grammar a -> Type -> a -> WriterT B.Builder (Either String) ()
 writeW g t x = do a <- lift (write g t x)
                   tell a
@@ -147,6 +176,9 @@ instance Invariant Grammar where
 isomap :: Iso' a b -> Grammar a -> Grammar b
 isomap m = invmap (view m) (review m)
 
+class Grammatical a where
+    grammar :: Grammar a
+
 simpleTyped :: Type -> Get a -> (a -> B.Builder) -> Grammar a
 simpleTyped t p w = Grammar { parse = \t' -> if t == t' then p else fail ("Non-matching type " ++ show t' ++ ", expected " ++ show t),
                               write = \t' -> if t == t' then Right . w else const (Left "Non-matching type"),
@@ -155,14 +187,20 @@ simpleTyped t p w = Grammar { parse = \t' -> if t == t' then p else fail ("Non-m
 void :: Grammar Void
 void = simpleTyped TVoid (fail "Void is uninhabited") (\_ -> error "Void is uninhabited")
 
+instance Grammatical Void where grammar = void
+
 unit :: Grammar ()
 unit = simpleTyped TUnit (return ()) (\() -> mempty)
+
+instance Grammatical () where grammar = unit
 
 bool :: Grammar Bool
 bool = simpleTyped TBool (fmap (> 0) getWord8) (\v -> B.word8 (if v then 1 else 0))
 
-int :: (Integral a, Bits a) => Grammar a
-int = Grammar { .. }
+instance Grammatical Bool where grammar = bool
+
+intWith :: (Integral a, Bits a) => Type -> Grammar a
+intWith def = Grammar { .. }
     where
       parse (TInt Nothing) = parseVarInt
       parse (TInt (Just n)) = parseFixedInt n
@@ -174,7 +212,20 @@ int = Grammar { .. }
       write (TInt (Just n)) = Right . encodeFixedInt n
       write (TUInt (Just n)) = Right . encodeFixedInt n
       write _ = const (Left "Non-matching type")
-      defaultType = TInt Nothing
+      defaultType = def
+
+instance Grammatical Int where grammar = intWith (TInt Nothing)
+instance Grammatical Int8 where grammar = intWith (TInt (Just 1))
+instance Grammatical Int16 where grammar = intWith (TInt (Just 2))
+instance Grammatical Int32 where grammar = intWith (TInt (Just 4))
+instance Grammatical Int64 where grammar = intWith (TInt (Just 8))
+instance Grammatical Integer where grammar = intWith (TInt Nothing)
+
+instance Grammatical Word where grammar = intWith (TUInt Nothing)
+instance Grammatical Word8 where grammar = intWith (TUInt (Just 1))
+instance Grammatical Word16 where grammar = intWith (TUInt (Just 2))
+instance Grammatical Word32 where grammar = intWith (TUInt (Just 4))
+instance Grammatical Word64 where grammar = intWith (TUInt (Just 8))
 
 parseVarUInt :: (Num a, Bits a) => Get a
 parseVarUInt = go 0 0
@@ -229,26 +280,32 @@ double = Grammar { parse = parseF, write = writeF, defaultType = def }
     where
       parseF TFloat32 = float2Double <$> getFloat32le
       parseF TFloat64 = getFloat64le
-      parseF t = fromInteger <$> parse int t
+      parseF t = fromInteger <$> parse grammar t
       writeF TFloat32 = Right . B.floatLE . double2Float
       writeF TFloat64 = Right . B.doubleLE
       writeF _ = const (Left "Non-matching type")
       def = TFloat64
+
+instance Grammatical Double where grammar = double
 
 float :: Grammar Float
 float = Grammar { parse = parseF, write = writeF, defaultType = def }
     where
       parseF TFloat32 = getFloat32le
       parseF TFloat64 = double2Float <$> getFloat64le
-      parseF t = fromInteger <$> parse int t
+      parseF t = fromInteger <$> parse grammar t
       writeF TFloat32 = Right . B.floatLE
       writeF TFloat64 = Right . B.doubleLE . float2Double
       writeF _ = const (Left "Non-matching type")
       def = TFloat32
 
+instance Grammatical Float where grammar = float
+
 -- TODO
 char :: Grammar Char
 char = simpleTyped TChar undefined undefined
+
+instance Grammatical Char where grammar = char
 
 vector :: G.Vector v a => Grammar a -> Grammar (v a)
 vector inner = Grammar { parse = parseF, write = writeF, defaultType = def }
@@ -267,6 +324,32 @@ vector inner = Grammar { parse = parseF, write = writeF, defaultType = def }
       writeF _ _ = Left "Non-matching type"
       def = TVector (defaultType inner) Nothing
 
+instance Grammatical a => Grammatical (V.Vector a) where
+    grammar = vector grammar
+
+instance (Grammatical a, UV.Unbox a) => Grammatical (UV.Vector a) where
+    grammar = vector grammar
+
+instance (Grammatical a, SV.Storable a) => Grammatical (SV.Vector a) where
+    grammar = vector grammar
+
+instance Grammatical a => Grammatical [a] where
+    grammar = isomap (from V.vector) grammar
+
+instance Grammatical T.Text where
+    grammar = isomap T.packed grammar
+
+instance Grammatical LT.Text where
+    grammar = isomap T.packed grammar
+
+instance Grammatical B.ByteString where
+    grammar = isomap B.packedBytes grammar
+
+instance Grammatical L.ByteString where
+    grammar = isomap B.packedBytes grammar
+
+-- TODO: more types here
+
 data Element a = Pure a | Labelled Label (Grammar a)
 
 instance Show a => Show (Element a) where
@@ -275,14 +358,15 @@ instance Show a => Show (Element a) where
 
 data Tuple a where
     Nil :: Tuple ()
-    -- the "Show" constraints are just temporarily here for debugging
-    (:.:) :: (Show a, Show b) => Element a -> Tuple b -> Tuple (a, b)
+    (:.:) :: Element a -> Tuple b -> Tuple (a, b)
 
 infixr 9 :.:
 
+{-
 instance Show a => Show (Tuple a) where
     showsPrec _ Nil = showString "Nil"
     showsPrec n (c :.: q) = showParen (n > 9) (showsPrec 10 c . showString " :.: " . showsPrec 10 q)
+-}
 
 parseStep :: Label -> Tuple a -> Parser (Tuple a)
 parseStep _ Nil _ = fail "Label not found"
@@ -364,6 +448,20 @@ variant p = Grammar { parse = parseF, write = writeF, defaultType = TVariant (de
       def :: Variant a -> [(Label, Type)]
       def V = []
       def ((l,g) :|: xs) = (l, defaultType g) : def xs
+
+class GenericGrammar (rep :: * -> *) where
+    repGrammar :: Grammar (rep x)
+
+instance GenericGrammar V1 where
+    repGrammar = invmap (\_ -> error "Void") (\_ -> error "Void") void
+
+instance GenericGrammar U1 where
+    repGrammar = invmap (\() -> U1) (\U1 -> ()) unit
+
+-- instance GenericGrammar 
+
+gGrammar :: (Generic a, GenericGrammar (Rep a)) => Grammar a
+gGrammar = isomap (from generic) repGrammar
 
 {-
 leaf :: Int -> Get (IndexTree l)
