@@ -139,6 +139,7 @@ sizeOf TFloat32 = Constant 4
 sizeOf TFloat64 = Constant 8
 sizeOf TChar = Range 1 (Just 4) -- UTF8 uses 1-4 bytes i believe
 sizeOf (TTuple (fieldTypes -> ts)) = foldl' addSize (Constant 0) (map sizeOf ts)
+sizeOf (TVariant (fieldTypes -> [t])) = sizeOf t
 sizeOf (TVariant (fieldTypes -> ts)) = addSize (Constant 1) $ foldl' maxSize (Constant 0) (map sizeOf ts)
 sizeOf (TVector _ Nothing) = addSize (sizeOf (TUInt Nothing)) (Range 0 Nothing)
 sizeOf (TVector et (Just n)) = multSize n (sizeOf et)
@@ -427,22 +428,30 @@ infixr 9 :|:
 variant :: Variant a -> Grammar a
 variant p = Grammar { parse = parseF, write = writeF, defaultType = TVariant (def p) }
     where
+      parseByLabel :: Variant a -> Label -> Parser a
+      parseByLabel V l _t = fail ("Invalid label " ++ show l)
+      parseByLabel ((l,g) :|: ps) l' t | l == l' = Left <$> parse g t
+                             | otherwise = Right <$> parseByLabel ps l' t
+
+      parseF (TVariant [(l,t)]) = parseByLabel p l t
       parseF (TVariant fs) =
         do idx <- fromIntegral <$> getWord8
            (l,t) <- case drop idx fs of
              [] -> fail ("Invalid tag index " ++ show idx)
              x:_ -> return x
-           go p l t
-        where
-          go :: Variant a -> Label -> Parser a
-          go V l _t = fail ("Invalid label " ++ show l)
-          go ((l,g) :|: ps) l' t | l == l' = Left <$> parse g t
-                                 | otherwise = Right <$> go ps l' t
+           parseByLabel p l t
       parseF t = case p of
                    -- special-case for single constructor variants
                    (_l, g) :|: V -> Left <$> parse g t
                    _ -> fail "Non-matching type, variant expected"
 
+      writeF (TVariant [(l,t)]) d = go p d
+        where
+          go :: Variant a -> a -> Either String B.Builder
+          go V _ = error "Void"
+          go ((l',g) :|: _) (Left a) | l == l' = write g t a
+                                     | otherwise = Left ("Invalid label " ++ show l')
+          go (_ :|: ps) (Right b) = go ps b
       writeF (TVariant fs) d = execWriterT (go p d)
         where
           go :: Variant a -> a -> WriterT B.Builder (Either String) ()
