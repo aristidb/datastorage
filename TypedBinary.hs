@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings, BangPatterns, ViewPatterns, RecordWildCards, GADTs, RankNTypes, TupleSections, KindSignatures, TypeFamilies, FlexibleInstances, UndecidableInstances, FlexibleContexts, ScopedTypeVariables, TypeOperators #-}
+{-# LANGUAGE OverloadedStrings, BangPatterns, ViewPatterns, RecordWildCards, GADTs, RankNTypes, TupleSections, KindSignatures, TypeFamilies, FlexibleInstances, UndecidableInstances, FlexibleContexts, ScopedTypeVariables, TypeOperators, DefaultSignatures #-}
 module TypedBinary where
 
 -- import IndexTree
@@ -181,6 +181,8 @@ isomap m = invmap (view m) (review m)
 
 class Grammatical a where
     grammar :: Grammar a
+    default grammar :: (Generic a, GenericGrammar (Rep a)) => Grammar a
+    grammar = gGrammar
 
 simpleTyped :: Type -> Get a -> (a -> B.Builder) -> Grammar a
 simpleTyped t p w = Grammar { parse = \t' -> if t == t' then p else fail ("Non-matching type " ++ show t' ++ ", expected " ++ show t),
