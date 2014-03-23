@@ -9,7 +9,6 @@ import qualified Data.Text.Lazy.Builder.Int as TB
 import qualified Data.ByteString.Lazy.Builder as B
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
-import Data.Text (Text)
 import Data.Monoid
 import Data.List
 import Data.Binary.Get
@@ -40,7 +39,8 @@ data Void
 instance Show Void where
     show _ = error "Void"
 
-type Label = Text
+data Label = L String | I Int
+    deriving (Eq, Ord, Show)
 
 {-
 -- do not leak (a hash of the) the transient ID to disk or rely on the particular ordering between runs of the program!
@@ -101,7 +101,8 @@ fieldsBuilder xs = TB.fromText "{ " <> innerBuilder <> TB.fromText " }"
           fieldBuilder (l, t) = labelBuilder l <> TB.fromText " as " <> typeBuilder t
 
 labelBuilder :: Label -> TB.Builder
-labelBuilder label = TB.fromText label
+labelBuilder (L s) = TB.fromString s
+labelBuilder (I i) = TB.fromString (show i)
 
 data TypeSize =
     Constant {-# UNPACK #-} !Int |
@@ -460,7 +461,7 @@ variant p = Grammar { parse = parseF, write = writeF, defaultType = TVariant (de
       def ((l,g) :|: xs) = (l, defaultType g) : def xs
 
 class GenericGrammar (rep :: * -> *) where
-    repGrammar :: Grammar (rep x)
+    repGrammar :: Grammar (rep ())
 
 instance GenericGrammar V1 where
     repGrammar = invmap (\_ -> error "Void") (\_ -> error "Void") void
@@ -468,24 +469,68 @@ instance GenericGrammar V1 where
 instance GenericGrammar U1 where
     repGrammar = invmap (\() -> U1) (\U1 -> ()) unit
 
+instance Grammatical c => GenericGrammar (K1 R c) where
+    repGrammar = invmap K1 unK1 grammar
+
+selectorLabel :: forall (t :: * -> (* -> *) -> * -> *) s f a. Selector s => Int -> t s f a -> Label
+selectorLabel i t =
+    case selName t of
+        "" -> I i
+        s -> L s
+
 class TupleGrammar (rep :: * -> *) where
     type TupleT rep :: *
-    tiso :: Iso' (TupleT rep) (rep x)
-    tup :: rep x -> Tuple (TupleT rep)
+    tfrom :: rep () -> TupleT rep
+    tto :: TupleT rep -> rep ()
+    tup :: rep () -> Int -> Tuple (TupleT rep)
+
+instance TupleGrammar U1 where
+    type TupleT U1 = ()
+    tfrom U1 = ()
+    tto () = U1
+    tup _ _i = Nil
+
+instance (Selector s, GenericGrammar f) => TupleGrammar (M1 S s f) where
+    type TupleT (M1 S s f) = (f (), ())
+    tfrom (M1 x) = (x, ())
+    tto (x, ()) = M1 x
+    tup _ i = Labelled (selectorLabel i (undefined :: M1 S s f ())) repGrammar :.: Nil
+
+instance (Selector s, GenericGrammar a, TupleGrammar b) => TupleGrammar (M1 S s a :*: b) where
+    type TupleT (M1 S s a :*: b) = (a (), TupleT b)
+    tfrom (M1 x :*: y) = (x, tfrom y)
+    tto (x, y) = (M1 x :*: tto y)
+    tup _ i = Labelled (selectorLabel i (undefined :: M1 S s a ())) repGrammar :.: tup (undefined :: b ()) (i + 1)
 
 class VariantGrammar (rep :: * -> *) where
     type VarT rep :: *
-    viso :: Iso' (VarT rep) (rep x)
-    var :: rep x -> Variant (VarT rep)
+    vfrom :: rep () -> VarT rep
+    vto :: VarT rep -> rep ()
+    var :: rep () -> Variant (VarT rep)
 
-instance TupleGrammar f => VariantGrammar (M1 C c f) where
+instance (Constructor c, TupleGrammar f) => VariantGrammar (M1 C c f) where
     type VarT (M1 C c f) = Either (TupleT f) Void
 
-instance (TupleGrammar a, VariantGrammar b) => VariantGrammar (a :*: b) where
-    type VarT (a :*: b) = Either (TupleT a) (VarT b)
+    vfrom (M1 x) = Left (tfrom x)
+
+    vto (Left x) = M1 (tto x)
+    vto (Right _) = error "Void"
+
+    var _ = (L (conName (undefined :: M1 C c f ())), tuple (tup (undefined :: f ()) 0)) :|: V
+
+instance (Constructor c, TupleGrammar a, VariantGrammar b) => VariantGrammar (M1 C c a :+: b) where
+    type VarT (M1 C c a :+: b) = Either (TupleT a) (VarT b)
+
+    vfrom (L1 (M1 x)) = Left (tfrom x)
+    vfrom (R1 x) = Right (vfrom x)
+
+    vto (Left x) = L1 (M1 (tto x))
+    vto (Right x) = R1 (vto x)
+
+    var _ = (L (conName (undefined :: M1 C c a ())), tuple (tup (undefined :: a x) 0)) :|: var (undefined :: b ())
 
 instance VariantGrammar f => GenericGrammar (M1 D c f) where
-    repGrammar = invmap M1 unM1 $ isomap viso $ variant $ var (undefined :: f x)
+    repGrammar = invmap M1 unM1 $ invmap vto vfrom $ variant $ var (undefined :: f ())
 
 gGrammar :: (Generic a, GenericGrammar (Rep a)) => Grammar a
 gGrammar = isomap (from generic) repGrammar
