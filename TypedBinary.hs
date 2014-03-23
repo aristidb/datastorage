@@ -33,6 +33,7 @@ import GHC.Generics hiding (from, to)
 import GHC.Generics.Lens
 import Data.Word
 import Data.Int
+import qualified Data.Binary
 
 data Void
 
@@ -302,9 +303,11 @@ float = Grammar { parse = parseF, write = writeF, defaultType = def }
 
 instance Grammatical Float where grammar = float
 
--- TODO
 char :: Grammar Char
-char = simpleTyped TChar undefined undefined
+char = simpleTyped TChar parseF writeF
+    where
+      parseF = Data.Binary.get -- UTF-8
+      writeF = B.charUtf8
 
 instance Grammatical Char where grammar = char
 
