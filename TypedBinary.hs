@@ -1,5 +1,13 @@
 {-# LANGUAGE OverloadedStrings, BangPatterns, ViewPatterns, RecordWildCards, GADTs, RankNTypes, TupleSections, KindSignatures, TypeFamilies, FlexibleInstances, UndecidableInstances, FlexibleContexts, ScopedTypeVariables, TypeOperators, DefaultSignatures #-}
-module TypedBinary where
+module TypedBinary
+{-
+(
+  Void
+, Label(..)
+, Type(..)
+)
+-}
+where
 
 -- import IndexTree
 import qualified Data.Text as T
@@ -102,8 +110,8 @@ fieldsBuilder xs = TB.fromText "{ " <> innerBuilder <> TB.fromText " }"
           fieldBuilder (l, t) = labelBuilder l <> TB.fromText " as " <> typeBuilder t
 
 labelBuilder :: Label -> TB.Builder
-labelBuilder (L s) = TB.fromString s
-labelBuilder (I i) = TB.fromString (show i)
+labelBuilder (L s) = TB.fromString (':' : s)
+labelBuilder (I i) = TB.fromString ('_' : show i)
 
 data TypeSize =
     Constant {-# UNPACK #-} !Int |
