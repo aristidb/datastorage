@@ -557,6 +557,9 @@ instance VariantGrammar f => GenericGrammar (M1 D c f) where
 gGrammar :: (Generic a, GenericGrammar (Rep a)) => Grammar a
 gGrammar = isomap (from generic) repGrammar
 
+instance (Grammatical a, Grammatical b) => Grammatical (a, b)
+instance (Grammatical a, Grammatical b, Grammatical c) => Grammatical (a, b, c)
+
 {-
 leaf :: Int -> Get (IndexTree l)
 leaf n = skip n >> return (Leaf n)
