@@ -18,6 +18,7 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
 import Data.Monoid
 import Data.List
+import Data.Maybe
 import Data.Binary.Get
 -- import Data.Unique
 import Data.Bits
@@ -88,25 +89,20 @@ fieldTypes = map snd
 typeBuilder :: Type -> B.Builder
 typeBuilder TVoid = B.string7 "void"
 typeBuilder TUnit = B.string7 "unit"
-typeBuilder TBool = B.string7 "boolean"
-typeBuilder (TInt l) = B.string7 "integer" <> lengthBuilder l (B.string7 "bytes")
-typeBuilder (TUInt l) = B.string7 "unsigned integer" <> lengthBuilder l (B.string7 "bytes")
+typeBuilder TBool = B.string7 "bool"
+typeBuilder (TInt l) = B.string7 "int" <> maybe mempty B.intDec l
+typeBuilder (TUInt l) = B.string7 "uint" <> maybe mempty B.intDec l
 typeBuilder TFloat32 = B.string7 "float32"
 typeBuilder TFloat64 = B.string7 "float64"
-typeBuilder TChar = B.string7 "character"
-typeBuilder (TTuple fs) = B.string7 "tuple of " <> fieldsBuilder fs
-typeBuilder (TVariant cs) = B.string7 "variant of " <> fieldsBuilder cs
-typeBuilder (TVector t n) = B.string7 "vector of " <> maybe mempty ((<> B.char7 ' ') . B.intDec) n <> typeBuilder t
--- typeBuilder (TMap s t) = B.string7 "map from " <> typeBuilder s <> B.string7 " to " <> typeBuilder t
+typeBuilder TChar = B.string7 "char"
+typeBuilder (TTuple fs) = fieldsBuilder '{' '}' fs
+typeBuilder (TVariant cs) = fieldsBuilder '[' ']' cs
+typeBuilder (TVector t n) = B.string7 "vec " <> maybe mempty ((<> B.char7 ' ') . B.intDec) n <> typeBuilder t
 
-lengthBuilder :: Maybe Int -> B.Builder -> B.Builder
-lengthBuilder Nothing _measure = mempty
-lengthBuilder (Just n) measure = B.string7 " of " <> B.intDec n <> B.char7 ' ' <> measure
-
-fieldsBuilder :: [(Label, Type)] -> B.Builder
-fieldsBuilder xs = B.string7 "{ " <> innerBuilder <> B.string7 " }"
+fieldsBuilder :: Char -> Char -> [(Label, Type)] -> B.Builder
+fieldsBuilder o c xs = B.char7 o <> innerBuilder <> B.char7 c
     where innerBuilder = mconcat (intersperse (B.string7 "; ") (map fieldBuilder xs))
-          fieldBuilder (l, t) = labelBuilder l <> B.string7 " as " <> typeBuilder t
+          fieldBuilder (l, t) = labelBuilder l <> B.char7 ' ' <> typeBuilder t
 
 labelBuilder :: Label -> B.Builder
 labelBuilder (L s) = B.string7 (':' : s)
