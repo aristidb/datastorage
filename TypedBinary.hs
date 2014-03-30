@@ -12,9 +12,8 @@ where
 -- import IndexTree
 import qualified Data.Text as T
 import qualified Data.Text.Lazy as LT
-import qualified Data.Text.Lazy.Builder as TB
-import qualified Data.Text.Lazy.Builder.Int as TB
 import qualified Data.ByteString.Lazy.Builder as B
+import qualified Data.ByteString.Lazy.Builder.ASCII as B
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
 import Data.Monoid
@@ -86,32 +85,32 @@ data Type =
 fieldTypes :: [(Label, Type)] -> [Type]
 fieldTypes = map snd
 
-typeBuilder :: Type -> TB.Builder
-typeBuilder TVoid = TB.fromText "void"
-typeBuilder TUnit = TB.fromText "unit"
-typeBuilder TBool = TB.fromText "boolean"
-typeBuilder (TInt l) = TB.fromText "integer" <> lengthBuilder l (TB.fromText "bytes")
-typeBuilder (TUInt l) = TB.fromText "unsigned integer" <> lengthBuilder l (TB.fromText "bytes")
-typeBuilder TFloat32 = TB.fromText "float32"
-typeBuilder TFloat64 = TB.fromText "float64"
-typeBuilder TChar = TB.fromText "character"
-typeBuilder (TTuple fs) = TB.fromText "tuple of " <> fieldsBuilder fs
-typeBuilder (TVariant cs) = TB.fromText "variant of " <> fieldsBuilder cs
-typeBuilder (TVector t n) = TB.fromText "vector of " <> maybe mempty ((<> TB.singleton ' ') . TB.decimal) n <> typeBuilder t
--- typeBuilder (TMap s t) = TB.fromText "map from " <> typeBuilder s <> TB.fromText " to " <> typeBuilder t
+typeBuilder :: Type -> B.Builder
+typeBuilder TVoid = B.string7 "void"
+typeBuilder TUnit = B.string7 "unit"
+typeBuilder TBool = B.string7 "boolean"
+typeBuilder (TInt l) = B.string7 "integer" <> lengthBuilder l (B.string7 "bytes")
+typeBuilder (TUInt l) = B.string7 "unsigned integer" <> lengthBuilder l (B.string7 "bytes")
+typeBuilder TFloat32 = B.string7 "float32"
+typeBuilder TFloat64 = B.string7 "float64"
+typeBuilder TChar = B.string7 "character"
+typeBuilder (TTuple fs) = B.string7 "tuple of " <> fieldsBuilder fs
+typeBuilder (TVariant cs) = B.string7 "variant of " <> fieldsBuilder cs
+typeBuilder (TVector t n) = B.string7 "vector of " <> maybe mempty ((<> B.char7 ' ') . B.intDec) n <> typeBuilder t
+-- typeBuilder (TMap s t) = B.string7 "map from " <> typeBuilder s <> B.string7 " to " <> typeBuilder t
 
-lengthBuilder :: Maybe Int -> TB.Builder -> TB.Builder
+lengthBuilder :: Maybe Int -> B.Builder -> B.Builder
 lengthBuilder Nothing _measure = mempty
-lengthBuilder (Just n) measure = TB.fromText " of " <> TB.decimal n <> TB.singleton ' ' <> measure
+lengthBuilder (Just n) measure = B.string7 " of " <> B.intDec n <> B.char7 ' ' <> measure
 
-fieldsBuilder :: [(Label, Type)] -> TB.Builder
-fieldsBuilder xs = TB.fromText "{ " <> innerBuilder <> TB.fromText " }"
-    where innerBuilder = mconcat (intersperse (TB.fromText "; ") (map fieldBuilder xs))
-          fieldBuilder (l, t) = labelBuilder l <> TB.fromText " as " <> typeBuilder t
+fieldsBuilder :: [(Label, Type)] -> B.Builder
+fieldsBuilder xs = B.string7 "{ " <> innerBuilder <> B.string7 " }"
+    where innerBuilder = mconcat (intersperse (B.string7 "; ") (map fieldBuilder xs))
+          fieldBuilder (l, t) = labelBuilder l <> B.string7 " as " <> typeBuilder t
 
-labelBuilder :: Label -> TB.Builder
-labelBuilder (L s) = TB.fromString (':' : s)
-labelBuilder (I i) = TB.fromString ('_' : show i)
+labelBuilder :: Label -> B.Builder
+labelBuilder (L s) = B.string7 (':' : s)
+labelBuilder (I i) = B.string7 ('_' : show i)
 
 data TypeSize =
     Constant {-# UNPACK #-} !Int |
