@@ -18,7 +18,6 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
 import Data.Monoid
 import Data.List
-import Data.Maybe
 import Data.Binary.Get
 -- import Data.Unique
 import Data.Bits
@@ -42,31 +41,18 @@ import GHC.Generics.Lens
 import Data.Word
 import Data.Int
 import qualified Data.Binary
+import Data.Aeson (ToJSON, FromJSON)
+import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Types as Aeson
+import Data.Char (toLower)
+import qualified Data.Map as M
 
 data Void
 
 instance Show Void where
     show _ = error "Void"
 
-data Label = L String | I Int
-    deriving (Eq, Ord, Show)
-
-{-
--- do not leak (a hash of the) the transient ID to disk or rely on the particular ordering between runs of the program!
-data Label = Label { humanReadable :: Text, transientId :: Unique }
-
-instance Show Label where
-    show = T.unpack . humanReadable
-
-makeLabel :: Text -> IO Label
-makeLabel name = Label name <$> newUnique
-
-instance Eq Label where
-    Label _ a == Label _ b = a == b
-
-instance Ord Label where
-    compare (Label _ a) (Label _ b) = compare a b
--}
+type Label = String
 
 data Type =
     TVoid |
@@ -77,14 +63,24 @@ data Type =
     TFloat32 |
     TFloat64 |
     TChar |
-    TTuple { fields :: [(Label, Type)] } |
-    TVariant { choices :: [(Label, Type)] } |
-    TVector { elementType :: Type, fixedSize :: Maybe Int }
-    -- TMap { source :: Type, destination :: Type }
-  deriving (Eq, Show)
+    TTuple (M.Map Label Type) |
+    TVariant (M.Map Label Type) |
+    TVector Type (Maybe Int)
+  deriving (Eq, Show, Generic)
 
-fieldTypes :: [(Label, Type)] -> [Type]
-fieldTypes = map snd
+fieldTypes :: M.Map Label Type -> [Type]
+fieldTypes = map snd . M.toAscList
+
+typeOptions :: Aeson.Options
+typeOptions =
+    Aeson.defaultOptions {
+        Aeson.constructorTagModifier = map toLower . drop 1,
+        Aeson.omitNothingFields = True,
+        Aeson.sumEncoding = Aeson.ObjectWithSingleField
+    }
+
+instance ToJSON Type where toJSON = Aeson.genericToJSON typeOptions
+instance FromJSON Type where parseJSON = Aeson.genericParseJSON typeOptions
 
 typeBuilder :: Type -> B.Builder
 typeBuilder TVoid = B.string7 "void"
@@ -99,14 +95,17 @@ typeBuilder (TTuple fs) = fieldsBuilder '{' '}' fs
 typeBuilder (TVariant cs) = fieldsBuilder '[' ']' cs
 typeBuilder (TVector t n) = B.string7 "vec " <> maybe mempty ((<> B.char7 ' ') . B.intDec) n <> typeBuilder t
 
-fieldsBuilder :: Char -> Char -> [(Label, Type)] -> B.Builder
-fieldsBuilder o c xs = B.char7 o <> innerBuilder <> B.char7 c
+fieldsBuilder :: Char -> Char -> M.Map Label Type -> B.Builder
+fieldsBuilder o c (M.toAscList -> xs) = B.char7 o <> innerBuilder <> B.char7 c
     where innerBuilder = mconcat (intersperse (B.string7 "; ") (map fieldBuilder xs))
           fieldBuilder (l, t) = labelBuilder l <> B.char7 ' ' <> typeBuilder t
 
 labelBuilder :: Label -> B.Builder
+labelBuilder = B.string7
+{-
 labelBuilder (L s) = B.string7 (':' : s)
 labelBuilder (I i) = B.string7 ('_' : show i)
+-}
 
 data TypeSize =
     Constant {-# UNPACK #-} !Int |
@@ -395,10 +394,10 @@ buildStep (Labelled l g :.: xs) l' t (c, q) | l == l' = write g t c
                                             | otherwise = buildStep xs l' t q
 
 tuple :: Tuple a -> Grammar a
-tuple p = Grammar { parse = parseF, write = writeF, defaultType = TTuple (def p) }
+tuple p = Grammar { parse = parseF, write = writeF, defaultType = TTuple (M.fromList $ def p) }
     where
       parseF (TTuple fs) =
-        do p' <- go p fs
+        do p' <- go p (M.toAscList fs)
            case extract p' of
              Just a -> return a
              Nothing -> fail "Not all fields could be parsed"
@@ -410,7 +409,7 @@ tuple p = Grammar { parse = parseF, write = writeF, defaultType = TTuple (def p)
                    Labelled _l g :.: Nil -> (, ()) <$> parse g t
                    _ -> fail "Non-matching type, tuple expected"
 
-      writeF (TTuple fs) a = execWriterT (go fs)
+      writeF (TTuple fs) a = execWriterT (go (M.toAscList fs))
         where
           go [] = return ()
           go ((l,t) : xs) = do tell =<< lift (buildStep p l t a)
@@ -431,15 +430,15 @@ data Variant a where
 infixr 9 :|:
 
 variant :: Variant a -> Grammar a
-variant p = Grammar { parse = parseF, write = writeF, defaultType = TVariant (def p) }
+variant p = Grammar { parse = parseF, write = writeF, defaultType = TVariant (M.fromList $ def p) }
     where
       parseByLabel :: Variant a -> Label -> Parser a
       parseByLabel V l _t = fail ("Invalid label " ++ show l)
       parseByLabel ((l,g) :|: ps) l' t | l == l' = Left <$> parse g t
                              | otherwise = Right <$> parseByLabel ps l' t
 
-      parseF (TVariant [(l,t)]) = parseByLabel p l t
-      parseF (TVariant fs) =
+      parseF (TVariant (M.toAscList -> [(l,t)])) = parseByLabel p l t
+      parseF (TVariant (M.toAscList -> fs)) =
         do idx <- fromIntegral <$> getWord8
            (l,t) <- case drop idx fs of
              [] -> fail ("Invalid tag index " ++ show idx)
@@ -450,14 +449,14 @@ variant p = Grammar { parse = parseF, write = writeF, defaultType = TVariant (de
                    (_l, g) :|: V -> Left <$> parse g t
                    _ -> fail "Non-matching type, variant expected"
 
-      writeF (TVariant [(l,t)]) d = go p d
+      writeF (TVariant (M.toAscList -> [(l,t)])) d = go p d
         where
           go :: Variant a -> a -> Either String B.Builder
           go V _ = error "Void"
           go ((l',g) :|: _) (Left a) | l == l' = write g t a
                                      | otherwise = Left ("Invalid label " ++ show l')
           go (_ :|: ps) (Right b) = go ps b
-      writeF (TVariant fs) d = execWriterT (go p d)
+      writeF (TVariant (M.toAscList -> fs)) d = execWriterT (go p d)
         where
           go :: Variant a -> a -> WriterT B.Builder (Either String) ()
           go V _ = error "Void"
@@ -492,8 +491,8 @@ instance Grammatical c => GenericGrammar (K1 R c) where
 selectorLabel :: forall (t :: * -> (* -> *) -> * -> *) s f a. Selector s => Int -> t s f a -> Label
 selectorLabel i t =
     case selName t of
-        "" -> I i
-        s -> L s
+        "" -> show i
+        s -> s
 
 class TupleGrammar (rep :: * -> *) where
     type TupleT rep :: *
@@ -533,7 +532,7 @@ instance (Constructor c, TupleGrammar f) => VariantGrammar (M1 C c f) where
     vto (Left x) = M1 (tto x)
     vto (Right _) = error "Void"
 
-    var _ = (L (conName (undefined :: M1 C c f ())), tuple (tup (undefined :: f ()) 0)) :|: V
+    var _ = (conName (undefined :: M1 C c f ()), tuple (tup (undefined :: f ()) 0)) :|: V
 
 instance (Constructor c, TupleGrammar a, VariantGrammar b) => VariantGrammar (M1 C c a :+: b) where
     type VarT (M1 C c a :+: b) = Either (TupleT a) (VarT b)
@@ -544,7 +543,7 @@ instance (Constructor c, TupleGrammar a, VariantGrammar b) => VariantGrammar (M1
     vto (Left x) = L1 (M1 (tto x))
     vto (Right x) = R1 (vto x)
 
-    var _ = (L (conName (undefined :: M1 C c a ())), tuple (tup (undefined :: a x) 0)) :|: var (undefined :: b ())
+    var _ = (conName (undefined :: M1 C c a ()), tuple (tup (undefined :: a x) 0)) :|: var (undefined :: b ())
 
 instance VariantGrammar f => GenericGrammar (M1 D c f) where
     repGrammar = invmap M1 unM1 $ invmap vto vfrom $ variant $ var (undefined :: f ())
