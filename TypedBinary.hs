@@ -41,7 +41,6 @@ import GHC.Generics.Lens
 import Data.Word
 import Data.Int
 import qualified Data.Binary
-import qualified Data.Map as M
 
 data Void
 
@@ -59,13 +58,13 @@ data Type =
     TFloat32 |
     TFloat64 |
     TChar |
-    TTuple (M.Map Label Type) |
-    TVariant (M.Map Label Type) |
+    TTuple [(Label, Type)] |
+    TVariant [(Label, Type)] |
     TVector Type (Maybe Int)
   deriving (Eq, Show, Generic)
 
-fieldTypes :: M.Map Label Type -> [Type]
-fieldTypes = map snd . M.toAscList
+fieldTypes :: [(Label, Type)] -> [Type]
+fieldTypes = map snd
 
 typeBuilder :: Type -> B.Builder
 typeBuilder TVoid = B.string7 "void"
@@ -80,8 +79,8 @@ typeBuilder (TTuple fs) = fieldsBuilder '{' '}' fs
 typeBuilder (TVariant cs) = fieldsBuilder '[' ']' cs
 typeBuilder (TVector t n) = B.string7 "vec " <> maybe mempty ((<> B.char7 ' ') . B.intDec) n <> typeBuilder t
 
-fieldsBuilder :: Char -> Char -> M.Map Label Type -> B.Builder
-fieldsBuilder o c (M.toAscList -> xs) = B.char7 o <> innerBuilder <> B.char7 c
+fieldsBuilder :: Char -> Char -> [(Label, Type)] -> B.Builder
+fieldsBuilder o c xs = B.char7 o <> innerBuilder <> B.char7 c
     where innerBuilder = mconcat (intersperse (B.string7 "; ") (map fieldBuilder xs))
           fieldBuilder (l, t) = labelBuilder l <> B.char7 ' ' <> typeBuilder t
 
@@ -379,10 +378,10 @@ buildStep (Labelled l g :.: xs) l' t (c, q) | l == l' = write g t c
                                             | otherwise = buildStep xs l' t q
 
 tuple :: Tuple a -> Grammar a
-tuple p = Grammar { parse = parseF, write = writeF, defaultType = TTuple (M.fromList $ def p) }
+tuple p = Grammar { parse = parseF, write = writeF, defaultType = TTuple (def p) }
     where
       parseF (TTuple fs) =
-        do p' <- go p (M.toAscList fs)
+        do p' <- go p fs
            case extract p' of
              Just a -> return a
              Nothing -> fail "Not all fields could be parsed"
@@ -394,7 +393,7 @@ tuple p = Grammar { parse = parseF, write = writeF, defaultType = TTuple (M.from
                    Labelled _l g :.: Nil -> (, ()) <$> parse g t
                    _ -> fail "Non-matching type, tuple expected"
 
-      writeF (TTuple fs) a = execWriterT (go (M.toAscList fs))
+      writeF (TTuple fs) a = execWriterT (go fs)
         where
           go [] = return ()
           go ((l,t) : xs) = do tell =<< lift (buildStep p l t a)
@@ -415,15 +414,15 @@ data Variant a where
 infixr 9 :|:
 
 variant :: Variant a -> Grammar a
-variant p = Grammar { parse = parseF, write = writeF, defaultType = TVariant (M.fromList $ def p) }
+variant p = Grammar { parse = parseF, write = writeF, defaultType = TVariant (def p) }
     where
       parseByLabel :: Variant a -> Label -> Parser a
       parseByLabel V l _t = fail ("Invalid label " ++ show l)
       parseByLabel ((l,g) :|: ps) l' t | l == l' = Left <$> parse g t
                              | otherwise = Right <$> parseByLabel ps l' t
 
-      parseF (TVariant (M.toAscList -> [(l,t)])) = parseByLabel p l t
-      parseF (TVariant (M.toAscList -> fs)) =
+      parseF (TVariant [(l,t)]) = parseByLabel p l t
+      parseF (TVariant fs) =
         do idx <- fromIntegral <$> getWord8
            (l,t) <- case drop idx fs of
              [] -> fail ("Invalid tag index " ++ show idx)
@@ -434,14 +433,14 @@ variant p = Grammar { parse = parseF, write = writeF, defaultType = TVariant (M.
                    (_l, g) :|: V -> Left <$> parse g t
                    _ -> fail "Non-matching type, variant expected"
 
-      writeF (TVariant (M.toAscList -> [(l,t)])) d = go p d
+      writeF (TVariant [(l,t)]) d = go p d
         where
           go :: Variant a -> a -> Either String B.Builder
           go V _ = error "Void"
           go ((l',g) :|: _) (Left a) | l == l' = write g t a
                                      | otherwise = Left ("Invalid label " ++ show l')
           go (_ :|: ps) (Right b) = go ps b
-      writeF (TVariant (M.toAscList -> fs)) d = execWriterT (go p d)
+      writeF (TVariant fs) d = execWriterT (go p d)
         where
           go :: Variant a -> a -> WriterT B.Builder (Either String) ()
           go V _ = error "Void"
