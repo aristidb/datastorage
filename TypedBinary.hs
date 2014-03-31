@@ -41,10 +41,6 @@ import GHC.Generics.Lens
 import Data.Word
 import Data.Int
 import qualified Data.Binary
-import Data.Aeson (ToJSON, FromJSON)
-import qualified Data.Aeson as Aeson
-import qualified Data.Aeson.Types as Aeson
-import Data.Char (toLower)
 import qualified Data.Map as M
 
 data Void
@@ -70,17 +66,6 @@ data Type =
 
 fieldTypes :: M.Map Label Type -> [Type]
 fieldTypes = map snd . M.toAscList
-
-typeOptions :: Aeson.Options
-typeOptions =
-    Aeson.defaultOptions {
-        Aeson.constructorTagModifier = map toLower . drop 1,
-        Aeson.omitNothingFields = True,
-        Aeson.sumEncoding = Aeson.ObjectWithSingleField
-    }
-
-instance ToJSON Type where toJSON = Aeson.genericToJSON typeOptions
-instance FromJSON Type where parseJSON = Aeson.genericParseJSON typeOptions
 
 typeBuilder :: Type -> B.Builder
 typeBuilder TVoid = B.string7 "void"
