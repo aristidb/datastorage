@@ -41,6 +41,8 @@ import GHC.Generics.Lens
 import Data.Word
 import Data.Int
 import qualified Data.Binary
+import qualified Data.Attoparsec.ByteString as A
+import qualified Data.Attoparsec.ByteString.Char8 as A8
 
 data Void
 
@@ -60,11 +62,14 @@ data Type =
     TChar |
     TTuple [(Label, Type)] |
     TVariant [(Label, Type)] |
-    TVector Type (Maybe Int)
+    TVector (Maybe Int) Type
   deriving (Eq, Show, Generic)
 
 fieldTypes :: [(Label, Type)] -> [Type]
 fieldTypes = map snd
+
+typeString :: Type -> B.ByteString
+typeString = L.toStrict . B.toLazyByteString . typeBuilder
 
 typeBuilder :: Type -> B.Builder
 typeBuilder TVoid = B.string7 "void"
@@ -77,19 +82,34 @@ typeBuilder TFloat64 = B.string7 "float64"
 typeBuilder TChar = B.string7 "char"
 typeBuilder (TTuple fs) = fieldsBuilder '{' '}' fs
 typeBuilder (TVariant cs) = fieldsBuilder '[' ']' cs
-typeBuilder (TVector t n) = B.string7 "vec " <> maybe mempty ((<> B.char7 ' ') . B.intDec) n <> typeBuilder t
+typeBuilder (TVector n t) = B.string7 "vec " <> maybe mempty ((<> B.char7 ' ') . B.intDec) n <> typeBuilder t
 
 fieldsBuilder :: Char -> Char -> [(Label, Type)] -> B.Builder
 fieldsBuilder o c xs = B.char7 o <> innerBuilder <> B.char7 c
-    where innerBuilder = mconcat (intersperse (B.string7 "; ") (map fieldBuilder xs))
-          fieldBuilder (l, t) = labelBuilder l <> B.char7 ' ' <> typeBuilder t
+    where innerBuilder = mconcat (intersperse (B.char7 ';') (map fieldBuilder xs))
+          fieldBuilder (l, t) = B.string7 l <> B.char7 ' ' <> typeBuilder t
 
-labelBuilder :: Label -> B.Builder
-labelBuilder = B.string7
-{-
-labelBuilder (L s) = B.string7 (':' : s)
-labelBuilder (I i) = B.string7 ('_' : show i)
--}
+typeParser :: A.Parser Type
+typeParser =
+    TVoid <$ A.string "void" <|>
+    TUnit <$ A.string "unit" <|>
+    TBool <$ A.string "bool" <|>
+    TInt <$> (A.string "int" *> optional A8.decimal) <|>
+    TUInt <$> (A.string "uint" *> optional A8.decimal) <|>
+    TFloat32 <$ A.string "float32" <|>
+    TFloat64 <$ A.string "float64" <|>
+    TChar <$ A.string "char" <|>
+    TTuple <$> fieldsParser '{' '}' <|>
+    TVariant <$> fieldsParser '[' ']' <|>
+    A.string "vec " *> (TVector <$> optional (A8.decimal <* A8.char ' ') <*> typeParser)
+
+fieldsParser :: Char -> Char -> A.Parser [(Label, Type)]
+fieldsParser o c = A8.char o *> innerParser <* A8.char c
+    where innerParser = fieldParser `A.sepBy` (A8.char ';')
+          fieldParser = do l <- some (A8.notChar ' ')
+                           _ <- A8.char ' '
+                           t <- typeParser
+                           return (l, t)
 
 data TypeSize =
     Constant {-# UNPACK #-} !Int |
@@ -127,9 +147,8 @@ sizeOf TChar = Range 1 (Just 4) -- UTF8 uses 1-4 bytes i believe
 sizeOf (TTuple (fieldTypes -> ts)) = foldl' addSize (Constant 0) (map sizeOf ts)
 sizeOf (TVariant (fieldTypes -> [t])) = sizeOf t
 sizeOf (TVariant (fieldTypes -> ts)) = addSize (Constant 1) $ foldl' maxSize (Constant 0) (map sizeOf ts)
-sizeOf (TVector _ Nothing) = addSize (sizeOf (TUInt Nothing)) (Range 0 Nothing)
-sizeOf (TVector et (Just n)) = multSize n (sizeOf et)
--- sizeOf (TMap _ _) = Range 0 Nothing
+sizeOf (TVector Nothing _) = addSize (sizeOf (TUInt Nothing)) (Range 0 Nothing)
+sizeOf (TVector (Just n) et) = multSize n (sizeOf et)
 
 isScalar :: Type -> Bool
 isScalar (TTuple _) = False
@@ -303,19 +322,19 @@ instance Grammatical Char where grammar = char
 vector :: G.Vector v a => Grammar a -> Grammar (v a)
 vector inner = Grammar { parse = parseF, write = writeF, defaultType = def }
     where
-      parseF (TVector t qn) =
+      parseF (TVector qn t) =
         do n <- case qn of
                   Just n0 -> return n0
                   Nothing -> parseVarUInt
            G.replicateM n (parse inner t)
       parseF _ = fail "Non-matching type"
-      writeF (TVector t Nothing) v = execWriterT $
+      writeF (TVector Nothing t) v = execWriterT $
         do tell (encodeVarUInt (G.length v))
            G.forM_ v (writeW inner t)
-      writeF (TVector t (Just n)) v | n == G.length v = execWriterT $ G.forM_ v (writeW inner t)
+      writeF (TVector (Just n) t) v | n == G.length v = execWriterT $ G.forM_ v (writeW inner t)
                                     | otherwise = Left "Non-matching length"
       writeF _ _ = Left "Non-matching type"
-      def = TVector (defaultType inner) Nothing
+      def = TVector Nothing (defaultType inner)
 
 instance Grammatical a => Grammatical (V.Vector a) where
     grammar = vector grammar
