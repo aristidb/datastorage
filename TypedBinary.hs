@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings, BangPatterns, ViewPatterns, RecordWildCards, GADTs, RankNTypes, TupleSections, KindSignatures, TypeFamilies, FlexibleInstances, UndecidableInstances, FlexibleContexts, ScopedTypeVariables, TypeOperators, DefaultSignatures, DeriveGeneric #-}
+{-# LANGUAGE OverloadedStrings, BangPatterns, ViewPatterns, RecordWildCards, GADTs, RankNTypes, TupleSections, KindSignatures, TypeFamilies, FlexibleInstances, UndecidableInstances, FlexibleContexts, ScopedTypeVariables, TypeOperators, DefaultSignatures, DeriveGeneric, MultiParamTypeClasses #-}
 module TypedBinary
 {-
 (
@@ -43,13 +43,16 @@ import Data.Int
 import qualified Data.Binary
 import qualified Data.Attoparsec.ByteString as A
 import qualified Data.Attoparsec.ByteString.Char8 as A8
+import qualified Test.SmallCheck as SC
+import qualified Test.SmallCheck.Series as SC
 
 data Void
 
 instance Show Void where
     show _ = error "Void"
 
-type Label = String
+newtype Label = L { getLabel :: String }
+    deriving (Eq, Show, Generic)
 
 data Type =
     TVoid |
@@ -87,7 +90,7 @@ typeBuilder (TVector n t) = B.string7 "vec " <> maybe mempty ((<> B.char7 ' ') .
 fieldsBuilder :: Char -> Char -> [(Label, Type)] -> B.Builder
 fieldsBuilder o c xs = B.char7 o <> innerBuilder <> B.char7 c
     where innerBuilder = mconcat (intersperse (B.char7 ';') (map fieldBuilder xs))
-          fieldBuilder (l, t) = B.string7 l <> B.char7 ' ' <> typeBuilder t
+          fieldBuilder (L l, t) = B.string7 l <> B.char7 ' ' <> typeBuilder t
 
 typeParser :: A.Parser Type
 typeParser =
@@ -102,14 +105,34 @@ typeParser =
     TTuple <$> fieldsParser '{' '}' <|>
     TVariant <$> fieldsParser '[' ']' <|>
     A.string "vec " *> (TVector <$> optional (A8.decimal <* A8.char ' ') <*> typeParser)
+    A.<?> "type"
 
 fieldsParser :: Char -> Char -> A.Parser [(Label, Type)]
 fieldsParser o c = A8.char o *> innerParser <* A8.char c
     where innerParser = fieldParser `A.sepBy` (A8.char ';')
-          fieldParser = do l <- some (A8.notChar ' ')
+          fieldParser = do l <- some (A8.satisfy (A8.notInClass " ;{}[]")) A.<?> "label"
                            _ <- A8.char ' '
                            t <- typeParser
-                           return (l, t)
+                           return (L l, t)
+
+instance Monad m => SC.Serial m Label where
+    series = L . SC.getNonEmpty <$> SC.series
+
+instance Monad m => SC.Serial m Type where
+    series = SC.cons0 TVoid SC.\/
+             SC.cons0 TUnit SC.\/
+             SC.cons0 TBool SC.\/
+             SC.cons1 (TInt . fmap SC.getPositive) SC.\/
+             SC.cons1 (TUInt . fmap SC.getPositive) SC.\/
+             SC.cons0 TFloat32 SC.\/
+             SC.cons0 TFloat64 SC.\/
+             SC.cons0 TChar SC.\/
+             SC.cons1 TTuple SC.\/
+             SC.cons1 TVariant SC.\/
+             SC.cons2 (TVector . fmap SC.getPositive)
+
+prop_typeDescription :: Type -> Bool
+prop_typeDescription t = A.parseOnly typeParser (typeString t) == Right t
 
 data TypeSize =
     Constant {-# UNPACK #-} !Int |
@@ -494,8 +517,8 @@ instance Grammatical c => GenericGrammar (K1 R c) where
 selectorLabel :: forall (t :: * -> (* -> *) -> * -> *) s f a. Selector s => Int -> t s f a -> Label
 selectorLabel i t =
     case selName t of
-        "" -> show i
-        s -> s
+        "" -> L (show i)
+        s -> L s
 
 class TupleGrammar (rep :: * -> *) where
     type TupleT rep :: *
@@ -535,7 +558,7 @@ instance (Constructor c, TupleGrammar f) => VariantGrammar (M1 C c f) where
     vto (Left x) = M1 (tto x)
     vto (Right _) = error "Void"
 
-    var _ = (conName (undefined :: M1 C c f ()), tuple (tup (undefined :: f ()) 0)) :|: V
+    var _ = (L (conName (undefined :: M1 C c f ())), tuple (tup (undefined :: f ()) 0)) :|: V
 
 instance (Constructor c, TupleGrammar a, VariantGrammar b) => VariantGrammar (M1 C c a :+: b) where
     type VarT (M1 C c a :+: b) = Either (TupleT a) (VarT b)
@@ -546,7 +569,7 @@ instance (Constructor c, TupleGrammar a, VariantGrammar b) => VariantGrammar (M1
     vto (Left x) = L1 (M1 (tto x))
     vto (Right x) = R1 (vto x)
 
-    var _ = (conName (undefined :: M1 C c a ()), tuple (tup (undefined :: a x) 0)) :|: var (undefined :: b ())
+    var _ = (L (conName (undefined :: M1 C c a ())), tuple (tup (undefined :: a x) 0)) :|: var (undefined :: b ())
 
 instance VariantGrammar f => GenericGrammar (M1 D c f) where
     repGrammar = invmap M1 unM1 $ invmap vto vfrom $ variant $ var (undefined :: f ())
