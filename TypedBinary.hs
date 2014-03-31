@@ -43,7 +43,6 @@ import Data.Int
 import qualified Data.Binary
 import qualified Data.Attoparsec.ByteString as A
 import qualified Data.Attoparsec.ByteString.Char8 as A8
-import qualified Test.SmallCheck as SC
 import qualified Test.SmallCheck.Series as SC
 
 data Void
@@ -450,18 +449,16 @@ tuple p = Grammar { parse = parseF, write = writeF, defaultType = TTuple (def p)
       def (Labelled l g :.: xs) = (l, defaultType g) : def xs
 
 data Variant a where
-    V :: Variant Void
-    (:|:) :: (Label, Grammar a) -> Variant b -> Variant (Either a b)
-
-infixr 9 :|:
+    VOne :: Label -> Grammar a -> Variant a
+    VPlus :: Variant a -> Variant b -> Variant (Either a b)
 
 variant :: Variant a -> Grammar a
 variant p = Grammar { parse = parseF, write = writeF, defaultType = TVariant (def p) }
     where
       parseByLabel :: Variant a -> Label -> Parser a
-      parseByLabel V l _t = fail ("Invalid label " ++ show l)
-      parseByLabel ((l,g) :|: ps) l' t | l == l' = Left <$> parse g t
-                             | otherwise = Right <$> parseByLabel ps l' t
+      parseByLabel (VOne l g) l' t | l == l' = parse g t
+                                   | otherwise = fail "Invalid label"
+      parseByLabel (VPlus a b) l' t = Left <$> parseByLabel a l' t <|> Right <$> parseByLabel b l' t
 
       parseF (TVariant [(l,t)]) = parseByLabel p l t
       parseF (TVariant fs) =
@@ -472,35 +469,35 @@ variant p = Grammar { parse = parseF, write = writeF, defaultType = TVariant (de
            parseByLabel p l t
       parseF t = case p of
                    -- special-case for single constructor variants
-                   (_l, g) :|: V -> Left <$> parse g t
+                   VOne _l g -> parse g t
                    _ -> fail "Non-matching type, variant expected"
 
       writeF (TVariant [(l,t)]) d = go p d
         where
           go :: Variant a -> a -> Either String B.Builder
-          go V _ = error "Void"
-          go ((l',g) :|: _) (Left a) | l == l' = write g t a
-                                     | otherwise = Left ("Invalid label " ++ show l')
-          go (_ :|: ps) (Right b) = go ps b
+          go (VOne l' g) a | l == l' = write g t a
+                           | otherwise = Left ("Invalid label " ++ show l')
+          go (VPlus x _) (Left a) = go x a
+          go (VPlus _ y) (Right b) = go y b
       writeF (TVariant fs) d = execWriterT (go p d)
         where
           go :: Variant a -> a -> WriterT B.Builder (Either String) ()
-          go V _ = error "Void"
-          go ((l,g) :|: _) (Left a) =
+          go (VOne l g) a =
             case lookup l (zipWith (\i (x,y) -> (x,(i,y))) [0::Int ..] fs) of
               Nothing -> fail ("Invalid label " ++ show l)
               Just (i,t) ->
                 do tell $ B.word8 (fromIntegral i)
                    writeW g t a
-          go (_ :|: ps) (Right b) = go ps b
+          go (VPlus x _) (Left a) = go x a
+          go (VPlus _ y) (Right b) = go y b
       writeF t d = case p of
                      -- special-case for single constructor variants
-                     (_l, g) :|: V -> write g t (either id (error "Void") d)
+                     VOne _l g -> write g t d
                      _ -> fail "Non-matching type, variant expected"
 
       def :: Variant a -> [(Label, Type)]
-      def V = []
-      def ((l,g) :|: xs) = (l, defaultType g) : def xs
+      def (VOne l g) = [(l, defaultType g)]
+      def (VPlus a b) = def a ++ def b
 
 class GenericGrammar (rep :: * -> *) where
     repGrammar :: Grammar (rep ())
@@ -551,25 +548,21 @@ class VariantGrammar (rep :: * -> *) where
     var :: rep () -> Variant (VarT rep)
 
 instance (Constructor c, TupleGrammar f) => VariantGrammar (M1 C c f) where
-    type VarT (M1 C c f) = Either (TupleT f) Void
+    type VarT (M1 C c f) = TupleT f
+    vfrom (M1 x) = tfrom x
+    vto x = M1 (tto x)
+    var _ = VOne (L (conName (undefined :: M1 C c f ()))) (tuple (tup (undefined :: f ()) 0))
 
-    vfrom (M1 x) = Left (tfrom x)
+instance (VariantGrammar a, VariantGrammar b) => VariantGrammar (a :+: b) where
+    type VarT (a :+: b) = Either (VarT a) (VarT b)
 
-    vto (Left x) = M1 (tto x)
-    vto (Right _) = error "Void"
-
-    var _ = (L (conName (undefined :: M1 C c f ())), tuple (tup (undefined :: f ()) 0)) :|: V
-
-instance (Constructor c, TupleGrammar a, VariantGrammar b) => VariantGrammar (M1 C c a :+: b) where
-    type VarT (M1 C c a :+: b) = Either (TupleT a) (VarT b)
-
-    vfrom (L1 (M1 x)) = Left (tfrom x)
+    vfrom (L1 x) = Left (vfrom x)
     vfrom (R1 x) = Right (vfrom x)
 
-    vto (Left x) = L1 (M1 (tto x))
+    vto (Left x) = L1 (vto x)
     vto (Right x) = R1 (vto x)
 
-    var _ = (L (conName (undefined :: M1 C c a ())), tuple (tup (undefined :: a x) 0)) :|: var (undefined :: b ())
+    var _ = VPlus (var (undefined :: a ())) (var (undefined :: b ()))
 
 instance VariantGrammar f => GenericGrammar (M1 D c f) where
     repGrammar = invmap M1 unM1 $ invmap vto vfrom $ variant $ var (undefined :: f ())
@@ -579,6 +572,8 @@ gGrammar = isomap (from generic) repGrammar
 
 instance (Grammatical a, Grammatical b) => Grammatical (a, b)
 instance (Grammatical a, Grammatical b, Grammatical c) => Grammatical (a, b, c)
+instance Grammatical a => Grammatical (Maybe a)
+instance (Grammatical a, Grammatical b) => Grammatical (Either a b)
 
 {-
 leaf :: Int -> Get (IndexTree l)
