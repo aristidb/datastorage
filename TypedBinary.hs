@@ -114,6 +114,13 @@ fieldsParser o c = A8.char o *> innerParser <* A8.char c
                            t <- typeParser
                            return (L l, t)
 
+getType :: Get Type
+getType =
+    do str <- fmap L.toStrict getLazyByteStringNul
+       case A.parseOnly (typeParser <* A.endOfInput) str of
+        Left e -> fail e
+        Right x -> return x
+
 instance Monad m => SC.Serial m Label where
     series = L . SC.getNonEmpty <$> SC.series
 
@@ -184,17 +191,17 @@ type Generator a = Type -> a -> Either String B.Builder
 
 data Grammar a = Grammar { parse :: Parser a, write :: Generator a, defaultType :: Type }
 
-parse' :: Grammar a -> Get a
-parse' g = parse g (defaultType g)
+parseFull :: Grammar a -> Get a
+parseFull g = getType >>= parse g
 
-simpleParse :: Grammar a -> L.ByteString -> a
-simpleParse g = runGet (parse' g)
+writeFull :: Grammar a -> Generator a
+writeFull g t a = ((typeBuilder t <> B.word8 0) <>) <$> write g t a
 
-write' :: Grammar a -> a -> Either String B.Builder
-write' g = write g (defaultType g)
+writeDefault :: Grammar a -> a -> Either String B.Builder
+writeDefault g = writeFull g (defaultType g)
 
 simpleWrite :: Grammar a -> a -> Either String L.ByteString
-simpleWrite g x = B.toLazyByteString <$> write' g x
+simpleWrite g x = B.toLazyByteString <$> writeDefault g x
 
 writeW :: Grammar a -> Type -> a -> WriterT B.Builder (Either String) ()
 writeW g t x = do a <- lift (write g t x)
