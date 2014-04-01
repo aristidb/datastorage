@@ -570,6 +570,7 @@ gGrammar = isomap (from generic) repGrammar
 
 instance (Grammatical a, Grammatical b) => Grammatical (a, b)
 instance (Grammatical a, Grammatical b, Grammatical c) => Grammatical (a, b, c)
+instance (Grammatical a, Grammatical b, Grammatical c, Grammatical d) => Grammatical (a, b, c, d)
 instance Grammatical a => Grammatical (Maybe a)
 instance (Grammatical a, Grammatical b) => Grammatical (Either a b)
 
