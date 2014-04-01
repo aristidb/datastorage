@@ -384,39 +384,32 @@ instance Grammatical L.ByteString where
 
 -- TODO: more types here
 
-data Element a = Pure a | Labelled Label (Grammar a)
-
-instance Show a => Show (Element a) where
-    showsPrec n (Pure a) = showParen (n > 10) (showString "Pure " . showsPrec 11 a)
-    showsPrec n (Labelled l _) = showParen (n > 10) (showString "Labelled <" . shows l . showString "> <g>")
-
 data Tuple a where
-    Nil :: Tuple ()
-    (:.:) :: Element a -> Tuple b -> Tuple (a, b)
+    TPure :: a -> Tuple a
+    TLabelled :: Label -> Grammar a -> Tuple a
+    TPlus :: Tuple a -> Tuple b -> Tuple (a, b)
 
-infixr 9 :.:
-
-{-
-instance Show a => Show (Tuple a) where
-    showsPrec _ Nil = showString "Nil"
-    showsPrec n (c :.: q) = showParen (n > 9) (showsPrec 10 c . showString " :.: " . showsPrec 10 q)
--}
-
-parseStep :: Label -> Tuple a -> Parser (Tuple a)
-parseStep _ Nil _ = fail "Label not found"
-parseStep l (Labelled l' g :.: q) t | l == l' = (:.: q) . Pure <$> parse g t
-parseStep l (c :.: q) t = (c :.:) <$> parseStep l q t
+parseStep :: Label -> Tuple a -> Parser (Bool, Tuple a)
+parseStep l x@(TLabelled l' g) t | l == l' = (True,) . TPure <$> parse g t
+                                 | otherwise = return (False, x)
+parseStep _ x@(TPure _) _ = return (False, x)
+parseStep l (TPlus x y) t =
+    do (s,a) <- parseStep l x t
+       if s
+         then return (True, TPlus a y)
+         else do (s',b) <- parseStep l y t
+                 return (s', TPlus a b)
 
 extract :: Tuple a -> Maybe a
-extract Nil = Just ()
-extract (Pure x :.: xs) = (x, ) <$> extract xs
-extract (Labelled _ _ :.: _) = Nothing
+extract (TPure a) = Just a
+extract (TLabelled _ _) = Nothing
+extract (TPlus x y) = (,) <$> extract x <*> extract y
 
 buildStep :: Tuple a -> Label -> Generator a
-buildStep Nil _l _t () = Left "Label not found"
-buildStep (Pure _x :.: xs) l t (_, q) = buildStep xs l t q
-buildStep (Labelled l g :.: xs) l' t (c, q) | l == l' = write g t c
-                                            | otherwise = buildStep xs l' t q
+buildStep (TLabelled l' g) l t c | l == l' = write g t c
+                                 | otherwise = Left "Label not found"
+buildStep (TPure _) _ _ _ = Left "Label not found"
+buildStep (TPlus x y) l t (a, b) = buildStep x l t a <|> buildStep y l t b
 
 tuple :: Tuple a -> Grammar a
 tuple p = Grammar { parse = parseF, write = writeF, defaultType = TTuple (def p) }
@@ -428,10 +421,12 @@ tuple p = Grammar { parse = parseF, write = writeF, defaultType = TTuple (def p)
              Nothing -> fail "Not all fields could be parsed"
         where
           go px [] = return px
-          go px ((l,t) : xs) = do px' <- parseStep l px t
-                                  go px' xs
+          go px ((l,t) : xs) = do (s, px') <- parseStep l px t
+                                  if s
+                                    then go px' xs
+                                    else fail "Label not found"
       parseF t = case p of
-                   Labelled _l g :.: Nil -> (, ()) <$> parse g t
+                   TLabelled _l g -> parse g t
                    _ -> fail "Non-matching type, tuple expected"
 
       writeF (TTuple fs) a = execWriterT (go fs)
@@ -440,13 +435,13 @@ tuple p = Grammar { parse = parseF, write = writeF, defaultType = TTuple (def p)
           go ((l,t) : xs) = do tell =<< lift (buildStep p l t a)
                                go xs
       writeF t a = case p of
-                     Labelled _l g :.: Nil -> write g t (fst a)
+                     TLabelled _l g -> write g t a
                      _ -> fail "Non-matching type, tuple expected"
 
       def :: Tuple a -> [(Label, Type)]
-      def Nil = []
-      def (Pure _x :.: xs) = def xs
-      def (Labelled l g :.: xs) = (l, defaultType g) : def xs
+      def (TPure _) = []
+      def (TLabelled l g) = [(l, defaultType g)]
+      def (TPlus x y) = def x ++ def y
 
 data Variant a where
     VOne :: Label -> Grammar a -> Variant a
@@ -521,25 +516,28 @@ class TupleGrammar (rep :: * -> *) where
     type TupleT rep :: *
     tfrom :: rep () -> TupleT rep
     tto :: TupleT rep -> rep ()
-    tup :: rep () -> Int -> Tuple (TupleT rep)
+    tup :: rep () -> Int -> (Int, Tuple (TupleT rep))
 
 instance TupleGrammar U1 where
     type TupleT U1 = ()
     tfrom U1 = ()
     tto () = U1
-    tup _ _i = Nil
+    tup _ i = (i, TPure ())
 
 instance (Selector s, GenericGrammar f) => TupleGrammar (M1 S s f) where
-    type TupleT (M1 S s f) = (f (), ())
-    tfrom (M1 x) = (x, ())
-    tto (x, ()) = M1 x
-    tup _ i = Labelled (selectorLabel i (undefined :: M1 S s f ())) repGrammar :.: Nil
+    type TupleT (M1 S s f) = f ()
+    tfrom (M1 x) = x
+    tto x = M1 x
+    tup _ i = (i + 1, TLabelled (selectorLabel i (undefined :: M1 S s f ())) repGrammar)
 
-instance (Selector s, GenericGrammar a, TupleGrammar b) => TupleGrammar (M1 S s a :*: b) where
-    type TupleT (M1 S s a :*: b) = (a (), TupleT b)
-    tfrom (M1 x :*: y) = (x, tfrom y)
-    tto (x, y) = (M1 x :*: tto y)
-    tup _ i = Labelled (selectorLabel i (undefined :: M1 S s a ())) repGrammar :.: tup (undefined :: b ()) (i + 1)
+instance (TupleGrammar a, TupleGrammar b) => TupleGrammar (a :*: b) where
+    type TupleT (a :*: b) = (TupleT a, TupleT b)
+    tfrom (x :*: y) = (tfrom x, tfrom y)
+    tto (x, y) = (tto x :*: tto y)
+    tup _ i = (i'', TPlus x y)
+      where
+        (i', x) = tup (undefined :: a ()) i
+        (i'', y) = tup (undefined :: b ()) i'
 
 class VariantGrammar (rep :: * -> *) where
     type VarT rep :: *
@@ -551,7 +549,7 @@ instance (Constructor c, TupleGrammar f) => VariantGrammar (M1 C c f) where
     type VarT (M1 C c f) = TupleT f
     vfrom (M1 x) = tfrom x
     vto x = M1 (tto x)
-    var _ = VOne (L (conName (undefined :: M1 C c f ()))) (tuple (tup (undefined :: f ()) 0))
+    var _ = VOne (L (conName (undefined :: M1 C c f ()))) (tuple (snd (tup (undefined :: f ()) 0)))
 
 instance (VariantGrammar a, VariantGrammar b) => VariantGrammar (a :+: b) where
     type VarT (a :+: b) = Either (VarT a) (VarT b)
