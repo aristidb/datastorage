@@ -419,7 +419,7 @@ buildStep (TPure _) _ _ _ = Left "Label not found"
 buildStep (TPlus x y) l t (a, b) = buildStep x l t a <|> buildStep y l t b
 
 tuple :: Tuple a -> Grammar a
-tuple p = Grammar { parse = parseF, write = writeF, defaultType = TTuple (def p) }
+tuple p = Grammar { parse = parseF, write = writeF, defaultType = defType p }
     where
       parseF (TTuple fs) =
         do p' <- go p fs
@@ -444,6 +444,10 @@ tuple p = Grammar { parse = parseF, write = writeF, defaultType = TTuple (def p)
       writeF t a = case p of
                      TLabelled _l g -> write g t a
                      _ -> fail "Non-matching type, tuple expected"
+
+      defType :: Tuple a -> Type
+      defType (TLabelled (L "0") g) = defaultType g
+      defType _ = TTuple (def p)
 
       def :: Tuple a -> [(Label, Type)]
       def (TPure _) = []

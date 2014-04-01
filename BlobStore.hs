@@ -1,7 +1,8 @@
-{-# LANGUAGE ConstraintKinds, KindSignatures, DataKinds, ScopedTypeVariables, DeriveFunctor, RankNTypes, ViewPatterns, MultiParamTypeClasses, FlexibleInstances, FlexibleContexts, DeriveDataTypeable #-}
+{-# LANGUAGE ConstraintKinds, KindSignatures, DataKinds, ScopedTypeVariables, DeriveFunctor, RankNTypes, ViewPatterns, MultiParamTypeClasses, FlexibleInstances, FlexibleContexts, DeriveDataTypeable, DeriveGeneric #-}
 
 module BlobStore where
 
+import TypedBinary
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
 import qualified Data.ByteString.Lazy as L
@@ -18,17 +19,21 @@ import Control.Applicative
 import Data.Monoid
 import Control.Lens
 import Control.Monad.Catch
-import Control.Exception hiding (try)
 import Data.Typeable
 import Control.Monad
 import Pipes
 import qualified Pipes.ByteString as PB
+import GHC.Generics hiding (from, to)
+import qualified Data.Binary.Get as Bin
 
 data Address = SHA512Key B.ByteString
-    deriving (Eq, Ord, Show)
+    deriving (Eq, Ord, Show, Generic)
 
 instance Byteable Address where
     toBytes (SHA512Key x) = x
+
+instance Grammatical Address where
+    grammar = gGrammar { defaultType = TVariant [(L "SHA512Key", TVector (Just 64) (TUInt (Just 1)))] }
 
 addressBuilder :: Address -> Builder.Builder
 addressBuilder (SHA512Key key) = Builder.string7 "sha512:" <> Builder.byteString (toBytes key)
@@ -89,6 +94,17 @@ objectStore :: (Functor f, Monad f, Put a i, Get f a o) => Store f a (Decorated 
 objectStore raw = Store { store = doStore, load = doLoad }
     where doStore x = store raw (decorate x)
           doLoad a = undecorate =<< load raw a
+
+-- TODO: do not use "fail"
+grammarStore :: (Functor f, Monad f) => Grammar o -> Store f a B.ByteString B.ByteString -> Store f a o o
+grammarStore g st = Store { store = doStore, load = doLoad }
+    where doStore x = case writeDefault g x of
+                        Left s -> fail s
+                        Right o -> store st $ L.toStrict $ Builder.toLazyByteString o
+          doLoad a = do o <- load st a
+                        case Bin.runGetOrFail (parseFull g) (L.fromStrict o) of
+                          Left (_, _, s) -> fail s
+                          Right (_, _, x) -> return x
 
 -- TODO: use non-simple Prism?
 prismStore :: (Functor f, Monad f) => (forall i. f i) -> Prism' s x -> Store f a s s -> Store f a x x
