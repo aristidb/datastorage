@@ -22,6 +22,9 @@ data SplitStore f = SplitStore {
     , producerStore :: Store' f Address (Producer B.ByteString f ())
     }
 
+splitStore :: (Functor f, Monad f) => (Producer B.ByteString f () -> Producer B.ByteString f ()) -> Store' f Address PrimaryObject -> Store' f Address (Producer B.ByteString f ())
+splitStore = undefined
+
 
 mkSplitter :: Monad m => (Producer B.ByteString m () -> PB.FreeT (Producer B.ByteString m) m ()) -> (Producer B.ByteString m () -> Producer B.ByteString m ())
 mkSplitter f p = go (f p)
