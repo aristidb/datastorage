@@ -189,7 +189,12 @@ type Parser a = Type -> Get a
 
 type Generator a = Type -> a -> Either String B.Builder
 
-data Grammar a = Grammar { parse :: Parser a, write :: Generator a, defaultType :: Type }
+data Grammar a = Grammar {
+    parse :: Parser a,
+    write :: Generator a,
+    defaultType :: Type,
+    pruneType :: a -> Type -> Type
+  }
 
 parseFull :: Grammar a -> Get a
 parseFull g = getType >>= parse g
@@ -198,7 +203,7 @@ writeFull :: Grammar a -> Generator a
 writeFull g t a = ((typeBuilder t <> B.word8 0) <>) <$> write g t a
 
 writeDefault :: Grammar a -> a -> Either String B.Builder
-writeDefault g = writeFull g (defaultType g)
+writeDefault g a = writeFull g (pruneType g a (defaultType g)) a
 
 simpleWrite :: Grammar a -> a -> Either String L.ByteString
 simpleWrite g x = B.toLazyByteString <$> writeDefault g x
@@ -208,7 +213,7 @@ writeW g t x = do a <- lift (write g t x)
                   tell a
 
 instance Invariant Grammar where
-    invmap f g (Grammar p w dt) = Grammar (fmap f . p) ((. g) . w) dt
+    invmap f g (Grammar p w dt pr) = Grammar (fmap f . p) ((. g) . w) dt (pr . g)
 
 isomap :: Iso' a b -> Grammar a -> Grammar b
 isomap m = invmap (view m) (review m)
@@ -221,7 +226,8 @@ class Grammatical a where
 simpleTyped :: Type -> Get a -> (a -> B.Builder) -> Grammar a
 simpleTyped t p w = Grammar { parse = \t' -> if t == t' then p else fail ("Non-matching type " ++ show t' ++ ", expected " ++ show t),
                               write = \t' -> if t == t' then Right . w else const (Left "Non-matching type"),
-                              defaultType = t }
+                              defaultType = t,
+                              pruneType = \_ -> id }
 
 void :: Grammar Void
 void = simpleTyped TVoid (fail "Void is uninhabited") (\_ -> error "Void is uninhabited")
@@ -252,6 +258,7 @@ intWith def = Grammar { .. }
       write (TUInt (Just n)) = Right . encodeFixedInt n
       write _ = const (Left "Non-matching type")
       defaultType = def
+      pruneType _ = id
 
 instance Grammatical Int where grammar = intWith (TInt Nothing)
 instance Grammatical Int8 where grammar = intWith (TInt (Just 1))
@@ -315,7 +322,7 @@ parseFixedInt n = do v <- parseFixedUInt n
                          | otherwise -> return v
 
 double :: Grammar Double
-double = Grammar { parse = parseF, write = writeF, defaultType = def }
+double = Grammar { parse = parseF, write = writeF, defaultType = def, pruneType = \_ -> id }
     where
       parseF TFloat32 = float2Double <$> getFloat32le
       parseF TFloat64 = getFloat64le
@@ -328,7 +335,7 @@ double = Grammar { parse = parseF, write = writeF, defaultType = def }
 instance Grammatical Double where grammar = double
 
 float :: Grammar Float
-float = Grammar { parse = parseF, write = writeF, defaultType = def }
+float = Grammar { parse = parseF, write = writeF, defaultType = def, pruneType = \_ -> id }
     where
       parseF TFloat32 = getFloat32le
       parseF TFloat64 = double2Float <$> getFloat64le
@@ -349,7 +356,7 @@ char = simpleTyped TChar parseF writeF
 instance Grammatical Char where grammar = char
 
 vector :: G.Vector v a => Grammar a -> Grammar (v a)
-vector inner = Grammar { parse = parseF, write = writeF, defaultType = def }
+vector inner = Grammar { parse = parseF, write = writeF, defaultType = def, pruneType = \_ -> id }
     where
       parseF (TVector qn t) =
         do n <- case qn of
@@ -419,7 +426,7 @@ buildStep (TPure _) _ _ _ = Left "Label not found"
 buildStep (TPlus x y) l t (a, b) = buildStep x l t a <|> buildStep y l t b
 
 tuple :: Tuple a -> Grammar a
-tuple p = Grammar { parse = parseF, write = writeF, defaultType = defType p }
+tuple p = Grammar { parse = parseF, write = writeF, defaultType = defType p, pruneType = \_ -> id }
     where
       parseF (TTuple fs) =
         do p' <- go p fs
@@ -459,7 +466,7 @@ data Variant a where
     VPlus :: Variant a -> Variant b -> Variant (Either a b)
 
 variant :: Variant a -> Grammar a
-variant p = Grammar { parse = parseF, write = writeF, defaultType = TVariant (def p) }
+variant p = Grammar { parse = parseF, write = writeF, defaultType = TVariant (def p), pruneType = pruneF p }
     where
       parseByLabel :: Variant a -> Label -> Parser a
       parseByLabel (VOne l g) l' t | l == l' = parse g t
@@ -504,6 +511,15 @@ variant p = Grammar { parse = parseF, write = writeF, defaultType = TVariant (de
       def :: Variant a -> [(Label, Type)]
       def (VOne l g) = [(l, defaultType g)]
       def (VPlus a b) = def a ++ def b
+
+      pruneF :: Variant a -> a -> Type -> Type
+      pruneF (VOne l _) _ (TVariant fs) =
+        case lookup l fs of
+          Just t -> TVariant [(l, t)]
+          Nothing -> TVariant fs -- error?
+      pruneF (VPlus a _) (Left x) t = pruneF a x t
+      pruneF (VPlus _ b) (Right y) t = pruneF b y t
+      pruneF _ _ t = t
 
 class GenericGrammar (rep :: * -> *) where
     repGrammar :: Grammar (rep ())
