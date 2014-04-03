@@ -428,7 +428,7 @@ buildStep (TPure _) _ _ _ = Left "Label not found"
 buildStep (TPlus x y) l t (a, b) = buildStep x l t a <|> buildStep y l t b
 
 tuple :: Tuple a -> Grammar a
-tuple p = Grammar { parse = parseF, write = writeF, defaultType = defType p, pruneType = \_ -> id }
+tuple p = Grammar { parse = parseF, write = writeF, defaultType = defType p, pruneType = pruneF }
     where
       parseF (TTuple fs) =
         do p' <- go p fs
@@ -462,6 +462,20 @@ tuple p = Grammar { parse = parseF, write = writeF, defaultType = defType p, pru
       def (TPure _) = []
       def (TLabelled l g) = [(l, defaultType g)]
       def (TPlus x y) = def x ++ def y
+
+      pruneF xx (TTuple fs) = TTuple (go p xx)
+        where
+          go :: Tuple a -> a -> [(Label, Type)]
+          go (TPure _) _ = []
+          go (TLabelled l g) x =
+            case lookup l fs of
+              Just t -> [(l, pruneType g x t)]
+              Nothing -> []
+          go (TPlus a b) (x, y) = go a x ++ go b y
+      pruneF x t =
+        case p of
+          TLabelled _l g -> pruneType g x t
+          _ -> t
 
 data Variant a where
     VOne :: Label -> Grammar a -> Variant a
@@ -515,9 +529,9 @@ variant p = Grammar { parse = parseF, write = writeF, defaultType = TVariant (de
       def (VPlus a b) = def a ++ def b
 
       pruneF :: Variant a -> a -> Type -> Type
-      pruneF (VOne l _) _ (TVariant fs) =
+      pruneF (VOne l g) x (TVariant fs) =
         case lookup l fs of
-          Just t -> TVariant [(l, t)]
+          Just t -> TVariant [(l, pruneType g x t)]
           Nothing -> TVariant fs -- error?
       pruneF (VPlus a _) (Left x) t = pruneF a x t
       pruneF (VPlus _ b) (Right y) t = pruneF b y t
