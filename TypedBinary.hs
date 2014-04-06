@@ -44,6 +44,9 @@ import qualified Data.Binary
 import qualified Data.Attoparsec.ByteString as A
 import qualified Data.Attoparsec.ByteString.Char8 as A8
 import qualified Test.SmallCheck.Series as SC
+import Crypto.Hash
+import Data.Byteable
+import Data.Maybe
 
 data Void
 
@@ -600,6 +603,12 @@ instance (Grammatical a, Grammatical b, Grammatical c) => Grammatical (a, b, c)
 instance (Grammatical a, Grammatical b, Grammatical c, Grammatical d) => Grammatical (a, b, c, d)
 instance Grammatical a => Grammatical (Maybe a)
 instance (Grammatical a, Grammatical b) => Grammatical (Either a b)
+
+instance (HashAlgorithm a) => Grammatical (Digest a) where
+    -- the "fromJust" is here because the only failure condition should be a wrong length and that should be prevented by
+    -- setting the vector length
+    grammar = (invmap (fromJust . digestFromByteString) toBytes grammar) { defaultType = TVector (Just len) (TUInt (Just 1)) }
+        where len = B.length $ toBytes (hashFinalize hashInit :: Digest a)
 
 {-
 leaf :: Int -> Get (IndexTree l)
