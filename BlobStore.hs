@@ -83,20 +83,18 @@ instance Monad m => Get m a (Decorated a) where
 instance Monad m => Get m a B.ByteString where
     unroll _ = return
 
-data Store f a i o = Store
-    { store :: i -> f a
+data Store f a o = Store
+    { store :: o -> f a
     , load :: a -> f o
     }
 
-type Store' f a x = Store f a x x
-
-objectStore :: (Functor f, Monad f, Put a i, Get f a o) => Store f a (Decorated a) (Decorated a) -> Store f a i o
+objectStore :: (Functor f, Monad f, Put a o, Get f a o) => Store f a (Decorated a) -> Store f a o
 objectStore raw = Store { store = doStore, load = doLoad }
     where doStore x = store raw (decorate x)
           doLoad a = undecorate =<< load raw a
 
 -- TODO: do not use "fail"
-grammarStore :: (Functor f, Monad f) => Grammar o -> Store f a B.ByteString B.ByteString -> Store f a o o
+grammarStore :: (Functor f, Monad f) => Grammar o -> Store f a B.ByteString -> Store f a o
 grammarStore g st = Store { store = doStore, load = doLoad }
     where doStore x = case writeDefault g x of
                         Left s -> fail s
@@ -107,7 +105,7 @@ grammarStore g st = Store { store = doStore, load = doLoad }
                           Right (_, _, x) -> return x
 
 -- TODO: use non-simple Prism?
-prismStore :: (Functor f, Monad f) => (forall i. f i) -> Prism' s x -> Store f a s s -> Store f a x x
+prismStore :: (Functor f, Monad f) => (forall i. f i) -> Prism' s x -> Store f a s -> Store f a x
 prismStore err p st = Store { store = doStore, load = doLoad }
     where doStore o = store st (review p o)
           doLoad a = do m <- preview p <$> load st a
@@ -120,23 +118,23 @@ data UnknownAddress = UnknownAddress
 
 instance Exception UnknownAddress
 
-memoryStore :: (Eq a, Hashable a, Put a i, Get IO a o) => IORef (HM.HashMap a B.ByteString) -> Store IO a i o
+memoryStore :: (Eq a, Hashable a, Put a o, Get IO a o) => IORef (HM.HashMap a B.ByteString) -> Store IO a o
 memoryStore mapRef = Store { store = doStore, load = doLoad }
     where doStore (decorate -> Decorated a o) = atomicModifyIORef' mapRef (\m -> (HM.insert a o m, a))
           doLoad a = maybe (throwM UnknownAddress) (unroll a) . HM.lookup a =<< readIORef mapRef
 
-newMemoryStore :: (Eq a, Hashable a, Put a i, Get IO a o) => IO (Store IO a i o)
+newMemoryStore :: (Eq a, Hashable a, Put a o, Get IO a o) => IO (Store IO a o)
 newMemoryStore = memoryStore <$> newIORef HM.empty
 
-lruCache :: (Ord a, Put a i, Get IO a o) => IORef (LRU.LRU a B.ByteString) -> Store IO a i o
+lruCache :: (Ord a, Put a o, Get IO a o) => IORef (LRU.LRU a B.ByteString) -> Store IO a o
 lruCache cacheRef = Store { store = doStore, load = doLoad }
     where doStore (decorate -> Decorated a o) = atomicModifyIORef' cacheRef (\m -> (LRU.insert a o m, a))
           doLoad a = maybe (throwM UnknownAddress) (unroll a) =<< atomicModifyIORef' cacheRef (LRU.lookup a)
 
-newLRUCache :: (Ord a, Put a i, Get IO a o) => Maybe Integer -> IO (Store IO a i o)
+newLRUCache :: (Ord a, Put a o, Get IO a o) => Maybe Integer -> IO (Store IO a o)
 newLRUCache len = lruCache <$> newIORef (LRU.newLRU len)
 
-fsStore :: (Byteable a, Put a i, Get IO a o) => FilePath -> Store IO a i o
+fsStore :: (Byteable a, Put a o, Get IO a o) => FilePath -> Store IO a o
 fsStore dir = Store { store = doStore, load = doLoad }
     where
         addrPath k = dir ++ "/O_" ++ B8.unpack (Base64U.encode $ toBytes k)
@@ -148,7 +146,7 @@ data InvalidObject = InvalidObject
 
 instance Exception InvalidObject
 
-verify :: (Functor f, MonadCatch f, Put a i, Get f a o, Eq a, Addressable a o) => Store f a i o -> Store f a i o
+verify :: (Functor f, MonadCatch f, Put a o, Get f a o, Eq a, Addressable a o) => Store f a o -> Store f a o
 verify st = Store { store = doStore, load = doLoad }
     where doStore x = do a <- store st x
                          when (a /= address x) $ throwM InvalidObject
@@ -156,19 +154,6 @@ verify st = Store { store = doStore, load = doLoad }
           doLoad a = do o <- load st a
                         when (a /= address o) $ throwM InvalidObject
                         return o
-
-newtype ParseError = ParseError String
-  deriving (Show, Typeable)
-
-instance Exception ParseError
-
-parserStore :: (Functor f, MonadCatch f, Put a B.ByteString, Get f a B.ByteString) => (i -> Builder.Builder) -> A.Parser o -> Store' f a B.ByteString -> Store f a i o
-parserStore render parser st = Store { store = doStore, load = doLoad }
-    where doStore x = store st (L.toStrict . Builder.toLazyByteString . render $ x)
-          doLoad a = do e <- A.parseOnly parser <$> load st a
-                        case e of
-                          Left s -> throwM (ParseError s)
-                          Right x -> return x
 
 {-
 -- possible implementation of <|>
