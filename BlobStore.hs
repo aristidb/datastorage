@@ -3,7 +3,6 @@
 module BlobStore where
 
 import TypedBinary
-import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as L
 import qualified Data.ByteString.Lazy.Builder as Builder
 import qualified Data.HashMap.Strict as HM
@@ -80,13 +79,13 @@ data GrammarException = GrammarException String
 
 instance Exception GrammarException
 
-grammarStore :: (Functor f, Monad f, MonadCatch f) => Grammar o -> Store f a B.ByteString -> Store f a o
+grammarStore :: (Functor f, Monad f, MonadCatch f) => Grammar o -> Store f a L.ByteString -> Store f a o
 grammarStore g st = Store { store = doStore, load = doLoad }
     where doStore x = case writeDefault g x of
                         Left s -> throwM (GrammarException s)
-                        Right o -> store st $ L.toStrict $ Builder.toLazyByteString o
+                        Right o -> store st $ Builder.toLazyByteString o
           doLoad a = do o <- load st a
-                        case Bin.runGetOrFail (parseFull g) (L.fromStrict o) of
+                        case Bin.runGetOrFail (parseFull g) o of
                           Left (_, _, s) -> throwM (GrammarException s)
                           Right (_, _, x) -> return x
 
