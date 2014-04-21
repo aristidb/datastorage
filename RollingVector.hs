@@ -91,8 +91,8 @@ warm ht@HashType{..} x =
 rollsplit :: (Monad m, G.Vector v a, G.Vector v Word64) => HashType a -> Pipe (v a) (Bool, v a) (StateT (HashState (v a)) m) ()
 rollsplit ht = await >>= initial ht >>= warm ht
 
-rollsplit' :: (Monad m, G.Vector v a, G.Vector v Word64) => HashType a -> Producer v a -> StateT (HashState (v a)) (Producer v) a
-rollsplit ht = await >>= initial ht >>= warm ht
+rollsplit' :: (Monad m, G.Vector v a, G.Vector v Word64) => HashType a -> Producer (v a) m () -> Producer (Bool, v a) (StateT (HashState (v a)) m) ()
+rollsplit' ht p = hoist lift p >-> rollsplit ht
 
 clamp :: (Monad m, G.Vector v a) => Int -> Int -> Producer (Bool, v a) m r -> Producer' (Bool, v a) m r
 clamp nmin nmax = loop 0
