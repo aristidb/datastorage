@@ -6,9 +6,9 @@ import Data.Word
 import Data.Bits
 import Control.Monad.ST
 import Control.Monad.State.Strict
-import Control.Monad.Trans.Free
-import Pipes
 import Control.Lens
+import Control.Monad.Morph (hoist)
+import Conduit
 
 -- import Control.Exception (assert)
 
@@ -46,7 +46,7 @@ nextBoundary HashType{..} old new =
 
 -- drawBlock :: (G.Vector v a, Monad m) => HashType a -> v a -> v a -> 
 
-contiguous :: (Monad m, G.Vector v a) => HashType a -> v a -> v a -> Producer' (Bool, v a) (StateT Word64 m) ()
+contiguous :: (Monad m, G.Vector v a) => HashType a -> v a -> v a -> Producer (StateT Word64 m) (Bool, v a)
 contiguous ht = go
     where
       go old new =
@@ -62,8 +62,12 @@ data HashState a = HashState { _lastHash :: !Word64, _lastWindow :: !a }
 
 makeLenses ''HashState
 
-initial :: (Monad m, G.Vector v a, G.Vector v Word64) => HashType a -> v a -> Pipe (v a) (Bool, v a) (StateT (HashState (v a)) m) (v a)
-initial ht@HashType{..} x =
+initialHashState :: G.Vector v a => HashState (v a)
+initialHashState = HashState 0 G.empty
+
+initial :: (Monad m, G.Vector v a, G.Vector v Word64) => HashType a -> Maybe (v a) -> Conduit (v a) (StateT (HashState (v a)) m) (Bool, v a)
+initial _ Nothing = return ()
+initial ht@HashType{..} (Just x) =
     do w <- use lastWindow
        if G.length w < window
          then do let n = window - G.length w
@@ -74,11 +78,12 @@ initial ht@HashType{..} x =
                  yield (False, xi)
                  if G.length w' < window
                    then await >>= initial ht
-                   else return xn
-         else return x
+                   else leftover xn
+         else leftover x
 
-warm :: (Monad m, G.Vector v a) => HashType a -> v a -> Pipe (v a) (Bool, v a) (StateT (HashState (v a)) m) ()
-warm ht@HashType{..} x =
+warm :: (Monad m, G.Vector v a) => HashType a -> Maybe (v a) -> Conduit (v a) (StateT (HashState (v a)) m) (Bool, v a)
+warm _ Nothing = return ()
+warm ht@HashType{..} (Just x) =
     do w <- use lastWindow
        w' <- hoist (zoom lastHash) $
          do contiguous ht w (G.take window x)
@@ -88,48 +93,33 @@ warm ht@HashType{..} x =
        lastWindow .= w'
        await >>= warm ht
 
-rollsplit :: (Monad m, G.Vector v a, G.Vector v Word64) => HashType a -> Pipe (v a) (Bool, v a) (StateT (HashState (v a)) m) ()
-rollsplit ht = await >>= initial ht >>= warm ht
+rollsplit :: (Monad m, G.Vector v a, G.Vector v Word64) => HashType a -> Conduit (v a) (StateT (HashState (v a)) m) (Bool, v a)
+rollsplit ht =
+    do await >>= initial ht
+       await >>= warm ht
 
-rollsplit' :: (Monad m, G.Vector v a, G.Vector v Word64) => HashType a -> Producer (v a) m () -> Producer (Bool, v a) (StateT (HashState (v a)) m) ()
-rollsplit' ht p = hoist lift p >-> rollsplit ht
-
-clamp :: (Monad m, G.Vector v a) => Int -> Int -> Producer (Bool, v a) m r -> Producer' (Bool, v a) m r
+clamp :: (Monad m, G.Vector v a) => Int -> Int -> Conduit (Bool, v a) m (Bool, v a)
 clamp nmin nmax = loop 0
-    where yieldSplitted t n d | n + G.length d < nmax = when (not $ G.null d) $ yield (t, d)
-                              | otherwise =
-            do let (d1, d2) = G.splitAt (nmax - n) d
-               yield (True, d1)
-               yieldSplitted t 0 d2
-          loop n p =
-            do x <- lift (next p)
-               case x of
-                 Left r -> return r
-                 Right ((t, d), p') ->
-                   do let n' = n + G.length d
-                      t' <- if n' < nmin
-                        then yield (False, d) >> return False
-                        else yieldSplitted t n d >> return t
-                      loop (if t' then 0 else n') p'
+  where
+    loop n = await >>= maybe (return ()) (go n)
 
-freeIt :: Monad m => Producer (Bool, a) m r -> FreeT (Producer a m) m r
-freeIt p0 =
-    do x <- lift (next p0)
-       case x of
-         Left r -> return r
-         Right (v, p') -> do n <- liftF (go v p')
-                             case n of
-                               Left r -> return r
-                               Right p'' -> freeIt p''
-  where go (eof, a) p =
-          do yield a
-             if eof
-               then return (Right p)
-               else do x <- lift (next p)
-                       case x of
-                         Left r -> return (Left r) -- premature end
-                         Right (v, p') -> go v p'
+    go n (t, d) =
+        do let t' = not (G.null d2) || (t && n' >= nmin)
+           yield (t', d1)
+           unless (G.null d2) $ leftover (t, d2)
+           loop (if t' then 0 else n')
+      where (d1, d2) = G.splitAt (nmax - n) d
+            n' = n + G.length d1
+
+recombine :: (Monad m, G.Vector v a) => Conduit (Bool, v a) m (v a)
+recombine = go G.empty
+  where
+    go x =
+      do n <- await
+         case n of
+           Nothing -> yield x
+           Just (False, y) -> go (x G.++ y)
+           Just (True, y) -> yield (x G.++ y) >> go G.empty
 
 byteHashShort :: HashType Word8
 byteHashShort = HashType { hash = \x -> 31 * fromIntegral x, window = 16, mask = 0xf }
-
