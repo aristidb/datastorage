@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings, BangPatterns, ViewPatterns, RecordWildCards, GADTs, RankNTypes, TupleSections, KindSignatures, TypeFamilies, FlexibleInstances, UndecidableInstances, FlexibleContexts, ScopedTypeVariables, TypeOperators, DefaultSignatures, DeriveGeneric, MultiParamTypeClasses #-}
+{-# LANGUAGE OverloadedStrings, BangPatterns, ViewPatterns, RecordWildCards, GADTs, RankNTypes, TupleSections, KindSignatures, TypeFamilies, FlexibleInstances, UndecidableInstances, FlexibleContexts, ScopedTypeVariables, TypeOperators, DefaultSignatures, DeriveGeneric, MultiParamTypeClasses, EmptyDataDecls #-}
 module TypedBinary
 {-
 (
