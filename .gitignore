@@ -2,3 +2,5 @@ obj/*
 *.s
 rh
 a.out*
+bench.dat
+teststore
