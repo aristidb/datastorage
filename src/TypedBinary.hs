@@ -29,7 +29,6 @@ import qualified Data.Vector.Unboxed as UV
 import qualified Data.Vector.Storable as SV
 import qualified Data.Vector.Generic as G
 -- import Succinct.Dictionary
-import Data.Functor.Invariant
 import Control.Monad.Trans.Class
 import Control.Monad.Writer hiding (void)
 import Control.Lens
@@ -215,11 +214,11 @@ writeW :: Grammar a -> Type -> a -> WriterT B.Builder (Either String) ()
 writeW g t x = do a <- lift (write g t x)
                   tell a
 
-instance Invariant Grammar where
-    invmap f g (Grammar p w dt pr) = Grammar (fmap f . p) ((. g) . w) dt (pr . g)
+mapGrammar :: (a -> b) -> (b -> a) -> Grammar a -> Grammar b
+mapGrammar f g (Grammar p w dt pr) = Grammar (fmap f . p) ((. g) . w) dt (pr . g)
 
 isomap :: Iso' a b -> Grammar a -> Grammar b
-isomap m = invmap (view m) (review m)
+isomap m = mapGrammar (view m) (review m)
 
 class Grammatical a where
     grammar :: Grammar a
@@ -528,13 +527,13 @@ class GenericGrammar (rep :: * -> *) where
     repGrammar :: Grammar (rep ())
 
 instance GenericGrammar V1 where
-    repGrammar = invmap (\_ -> error "Void") (\_ -> error "Void") void
+    repGrammar = mapGrammar (\_ -> error "Void") (\_ -> error "Void") void
 
 instance GenericGrammar U1 where
-    repGrammar = invmap (\() -> U1) (\U1 -> ()) unit
+    repGrammar = mapGrammar (\() -> U1) (\U1 -> ()) unit
 
 instance Grammatical c => GenericGrammar (K1 R c) where
-    repGrammar = invmap K1 unK1 grammar
+    repGrammar = mapGrammar K1 unK1 grammar
 
 selectorLabel :: forall (t :: * -> (* -> *) -> * -> *) s f a. Selector s => Int -> t s f a -> Label
 selectorLabel i t =
@@ -593,7 +592,7 @@ instance (VariantGrammar a, VariantGrammar b) => VariantGrammar (a :+: b) where
     var _ = VPlus (var (undefined :: a ())) (var (undefined :: b ()))
 
 instance VariantGrammar f => GenericGrammar (M1 D c f) where
-    repGrammar = invmap M1 unM1 $ invmap vto vfrom $ variant $ var (undefined :: f ())
+    repGrammar = mapGrammar M1 unM1 $ mapGrammar vto vfrom $ variant $ var (undefined :: f ())
 
 gGrammar :: (Generic a, GenericGrammar (Rep a)) => Grammar a
 gGrammar = isomap (from generic) repGrammar
@@ -607,7 +606,7 @@ instance (Grammatical a, Grammatical b) => Grammatical (Either a b)
 instance (HashAlgorithm a) => Grammatical (Digest a) where
     -- the "fromJust" is here because the only failure condition should be a wrong length and that should be prevented by
     -- setting the vector length
-    grammar = (invmap (fromJust . digestFromByteString) toBytes grammar) { defaultType = TVector (Just len) (TUInt (Just 1)) }
+    grammar = (mapGrammar (fromJust . digestFromByteString) toBytes grammar) { defaultType = TVector (Just len) (TUInt (Just 1)) }
         where len = B.length $ toBytes (hashFinalize hashInit :: Digest a)
 
 {-
