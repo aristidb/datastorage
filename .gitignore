@@ -4,3 +4,4 @@ rh
 a.out*
 bench.dat
 teststore
+dist/
