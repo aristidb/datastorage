@@ -8,8 +8,9 @@ cabal.mkDerivation (self: {
   version = "0.1";
   src = ./.;
   buildDepends = [
-    attoparsec binary byteable cryptohash dataBinaryIeee754 lens mtl
-    smallcheck text transformers vector
+    attoparsec binary byteable cryptohash dataBinaryIeee754 deepseq
+    exceptions hashable lens mtl smallcheck text transformers
+    unorderedContainers vector
   ];
   meta = {
     description = "Data needs to be stored more elegantly";
