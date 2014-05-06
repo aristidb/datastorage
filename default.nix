@@ -1,7 +1,7 @@
 { pkgs ? (import <nixpkgs> {}) }:
 
 with pkgs;
-with haskellPackages.override { prefFun = self : haskell.ghc763Prefs self // { binary = self.binary_0_7_1_0; }; };
+with haskellPackages_ghc782;
 
 cabal.mkDerivation (self: {
   pname = "datastorage";
@@ -17,5 +17,5 @@ cabal.mkDerivation (self: {
     license = self.stdenv.lib.licenses.bsd3;
     platforms = self.ghc.meta.platforms;
   };
-  buildTools = [ cabalInstall_1_18_0_3 ];
+  buildTools = [ cabalInstall_1_20_0_1 ];
 })
