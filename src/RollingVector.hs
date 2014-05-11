@@ -13,9 +13,10 @@ import qualified Test.QuickCheck as QC
 import qualified Data.Vector as V
 -- import Debug.Trace
 import Control.Exception (assert)
+import Data.List
 
 hashCombine :: Word64 -> Word64 -> Word64
-hashCombine !x !y = x `rotateL` 1 `xor` y
+hashCombine !x !y = (x `rotateL` 1) `xor` y
 {-# INLINE hashCombine #-}
 
 data HashType a = HashType {
@@ -25,7 +26,7 @@ data HashType a = HashType {
     }
 
 addRemove :: Int -> Word64 -> Word64 -> Word64
-addRemove !w !o !n = o `rotateL` w `xor` n
+addRemove !w !o !n = (o `rotateL` w) `xor` n
 {-# INLINE addRemove #-}
 
 prehash :: (G.Vector v a, G.Vector v Word64) => HashType a -> v a -> Word64 -> Word64
@@ -39,7 +40,7 @@ nextBoundary HashType{..} !old !new =
     inputSize = G.length new
     go !h !iIn | iIn < inputSize =
                         do case (h' .&. mask) == mask of
-                             True -> return (Just $ iIn + 1, h)
+                             True -> return (Just $ iIn + 1, h')
                              False -> go h' (iIn + 1)
                | otherwise = return (Nothing, h)
       where hi = addRemove window (hash (old G.! iIn)) (hash (new G.! iIn)) -- TODO: G.unsafeIndex
@@ -137,8 +138,18 @@ prop_allInputIsOutput ht = QC.forAll (QC.listOf (fmap V.fromList QC.arbitrary)) 
 prop_inputSplit :: (QC.Arbitrary a, Show a, Eq a) => HashType a -> QC.Property
 prop_inputSplit ht = QC.forAll (QC.listOf (fmap V.fromList QC.arbitrary)) $ \xs -> simpleRollsplit ht xs == simpleRollsplit ht [V.concat xs]
 
+prop_prefix :: (QC.Arbitrary a, Show a, Eq a) => HashType a -> QC.Property
+prop_prefix ht = QC.forAll (fmap V.fromList QC.arbitrary) $ \xs ->
+                 QC.forAll (fmap V.fromList QC.arbitrary) $ \ys ->
+                 let a = simpleRollsplit ht [xs, ys]; b = simpleRollsplit ht [xs] in init' b `isPrefixOf` a
+
+prop_suffix :: (QC.Arbitrary a, Show a, Eq a) => HashType a -> QC.Property
+prop_suffix ht = QC.forAll (fmap V.fromList QC.arbitrary) $ \xs ->
+                 QC.forAll (fmap V.fromList QC.arbitrary) $ \ys ->
+                 let a = simpleRollsplit ht [xs, ys]; c = simpleRollsplit ht [ys] in tail' c `isSuffixOf` a
+
 prop_valid :: (QC.Arbitrary a, Show a, Eq a) => HashType a -> QC.Property
-prop_valid ht = prop_allInputIsOutput ht QC..&&. prop_inputSplit ht
+prop_valid ht = prop_allInputIsOutput ht QC..&&. prop_inputSplit ht QC..&&. prop_prefix ht QC..&&. prop_suffix ht
 
 init' :: [a] -> [a]
 init' xs = take (length xs - 1) xs
