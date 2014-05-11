@@ -9,8 +9,10 @@ import Control.Monad.State.Strict
 import Control.Lens
 import Control.Monad.Morph (hoist)
 import Conduit
-
--- import Control.Exception (assert)
+import qualified Test.QuickCheck as QC
+import qualified Data.Vector as V
+-- import Debug.Trace
+import Control.Exception (assert)
 
 hashCombine :: Word64 -> Word64 -> Word64
 hashCombine !x !y = x `rotateL` 1 `xor` y
@@ -31,7 +33,7 @@ prehash HashType{..} v h = G.foldl' hashCombine h x
     where x = G.map hash v
 
 nextBoundary :: (G.Vector v a, MonadState Word64 m) => HashType a -> v a -> v a -> m (Maybe Int)
-nextBoundary HashType{..} old new =
+nextBoundary HashType{..} !old !new =
     state $ \h0 -> runST (go h0 0)
   where
     inputSize = G.length new
@@ -40,23 +42,21 @@ nextBoundary HashType{..} old new =
                              True -> return (Just $ iIn + 1, h)
                              False -> go h' (iIn + 1)
                | otherwise = return (Nothing, h)
-      where hi = addRemove window (hash (old `G.unsafeIndex` iIn)) (hash (new `G.unsafeIndex` iIn))
+      where hi = addRemove window (hash (old G.! iIn)) (hash (new G.! iIn)) -- TODO: G.unsafeIndex
             h' = hashCombine h hi
 {-# INLINE nextBoundary #-}
-
--- drawBlock :: (G.Vector v a, Monad m) => HashType a -> v a -> v a -> 
 
 contiguous :: (Monad m, G.Vector v a) => HashType a -> v a -> v a -> Producer (StateT Word64 m) (Bool, v a)
 contiguous ht = go
     where
-      go old new =
+      go !old !new =
         do x <- nextBoundary ht old new
            case x of
              Nothing -> yield (False, new)
              Just n -> do yield (True, a)
                           go old' new'
                where (a, new') = G.splitAt n new
-                     old' = G.drop n new
+                     old' = G.drop n old
 
 data HashState a = HashState { _lastHash :: !Word64, _lastWindow :: !a }
 
@@ -86,6 +86,7 @@ warm _ Nothing = return ()
 warm ht@HashType{..} (Just x) =
     do w <- use lastWindow
        w' <- hoist (zoom lastHash) $
+         assert (G.length w == window) $
          do contiguous ht w (G.take window x)
             let len = G.length x
             when (len > window) $ contiguous ht x (G.drop window x)
@@ -121,5 +122,26 @@ recombine = go G.empty
            Just (False, y) -> go (x G.++ y)
            Just (True, y) -> yield (x G.++ y) >> go G.empty
 
+simpleRollsplit :: (G.Vector v a, G.Vector v Word64) => HashType a -> [v a] -> [v a]
+simpleRollsplit ht xs = runIdentity (yieldMany xs $$ evalStateC initialHashState (rollsplit ht =$= recombine) =$= sinkList)
+
+simpleRollsplit' :: (G.Vector v a, G.Vector v Word64) => HashType a -> [v a] -> [(Bool, v a)]
+simpleRollsplit' ht xs = runIdentity (yieldMany xs $$ evalStateC initialHashState (rollsplit ht) =$= sinkList)
+
 byteHashShort :: HashType Word8
 byteHashShort = HashType { hash = \x -> 31 * fromIntegral x, window = 16, mask = 0xf }
+
+prop_allInputIsOutput :: (QC.Arbitrary a, Show a, Eq a) => HashType a -> QC.Property
+prop_allInputIsOutput ht = QC.forAll (QC.listOf (fmap V.fromList QC.arbitrary)) $ \xs -> V.concat (simpleRollsplit ht xs) == V.concat xs
+
+prop_inputSplit :: (QC.Arbitrary a, Show a, Eq a) => HashType a -> QC.Property
+prop_inputSplit ht = QC.forAll (QC.listOf (fmap V.fromList QC.arbitrary)) $ \xs -> simpleRollsplit ht xs == simpleRollsplit ht [V.concat xs]
+
+prop_valid :: (QC.Arbitrary a, Show a, Eq a) => HashType a -> QC.Property
+prop_valid ht = prop_allInputIsOutput ht QC..&&. prop_inputSplit ht
+
+init' :: [a] -> [a]
+init' xs = take (length xs - 1) xs
+
+tail' :: [a] -> [a]
+tail' xs = drop 1 xs

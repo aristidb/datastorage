@@ -10,7 +10,7 @@ cabal.mkDerivation (self: {
   buildDepends = [
     attoparsec binary byteable conduitCombinators cryptohash
     dataBinaryIeee754 deepseq exceptions hashable lens mmorph mtl
-    smallcheck text transformers unorderedContainers vector
+    smallcheck text transformers unorderedContainers vector QuickCheck
   ];
   meta = {
     description = "Data needs to be stored more elegantly";
