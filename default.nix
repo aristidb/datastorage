@@ -1,7 +1,7 @@
 { pkgs ? (import <nixpkgs> {}) }:
 
 with pkgs;
-with haskellPackages_ghc782;
+with haskellPackages_ghc784;
 
 cabal.mkDerivation (self: {
   pname = "datastorage";
@@ -17,5 +17,4 @@ cabal.mkDerivation (self: {
     license = self.stdenv.lib.licenses.bsd3;
     platforms = self.ghc.meta.platforms;
   };
-  buildTools = [ cabalInstall_1_20_0_1 ];
 })
